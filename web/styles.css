@@ -119,5 +119,15 @@ select.cell:focus { background: #fff7e6; box-shadow: inset 0 0 0 2px var(--accen
 .totals .row.sub { border-top: 1px dashed var(--line); margin-top: 4px; padding-top: 8px; }
 .totals .row.total { border-top: 2px solid var(--ink); margin-top: 6px; padding-top: 8px; font-weight: 700; font-size: 16px; }
 .totals .row .v { font-variant-numeric: tabular-nums; }
+/* Comparación (B2) */
+.compare-warn { background: #fff7e6; border: 1px solid #e0a800; color: #8a6d00; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+.cellpad { padding: 7px 10px; }
+td.num .cellpad { text-align: right; font-variant-numeric: tabular-nums; }
+.delta-up { color: #d11; }     /* B cuesta más que el dueño */
+.delta-down { color: #0f9d58; } /* B cuesta menos */
+.badge { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 10px; margin-left: 6px; vertical-align: middle; }
+.badge.a { background: #e8f0fe; color: #2563eb; }
+.badge.b { background: #fdecef; color: #d11; }
+
 .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
 .hint kbd { background: #eef0f3; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font: 11px monospace; }

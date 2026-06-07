@@ -19,6 +19,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { buildWorkbook } from "./export.js";
 import { parseWorkbook } from "./import.js";
+import { compareBoqs } from "./compare.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
 const { db } = createDb("data.db");
@@ -80,6 +81,16 @@ const server = createServer(async (req, res) => {
         currency: body.currency?.trim() || "DOP",
       });
       return json(res, 201, { id });
+    }
+
+    // Comparar 2 presupuestos: GET /api/compare?a=ID&b=ID
+    if (url.pathname === "/api/compare" && req.method === "GET") {
+      const a = url.searchParams.get("a") ?? "";
+      const b = url.searchParams.get("b") ?? "";
+      const ba = getBoq(db, a);
+      const bb = getBoq(db, b);
+      if (!ba || !bb) return json(res, 404, { error: "BOQ no encontrado" });
+      return json(res, 200, compareBoqs(ba, getItems(db, a), bb, getItems(db, b)));
     }
 
     // Export a Excel: GET /api/boq/:id/export
