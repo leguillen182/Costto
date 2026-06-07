@@ -141,6 +141,27 @@ async function init() {
   await load();
 }
 
+// ---- comparación de presupuestos (B2) ----
+interface CompareRow { key: string; code?: string; description: string; side: "both" | "onlyA" | "onlyB"; amountA: number | null; amountB: number | null; deltaAmount: number | null; deltaPct: number | null; }
+interface CompareData { rows: CompareRow[]; totalA: number; totalB: number; deltaTotal: number; currencyA: string; currencyB: string; sameCurrency: boolean; counts: { matched: number; onlyA: number; onlyB: number }; }
+let compareMode = false;
+let compareWithId = "";
+let compareData: CompareData | null = null;
+
+async function openCompare() {
+  const others = boqList.filter((b) => b.id !== currentBoqId);
+  if (others.length === 0) { alert("Necesitas al menos 2 presupuestos para comparar. Crea otro con '+ Nuevo'."); return; }
+  compareWithId = others.some((b) => b.id === compareWithId) ? compareWithId : others[0]!.id;
+  compareMode = true;
+  await loadCompare();
+}
+async function loadCompare() {
+  const r = await fetch(`/api/compare?a=${currentBoqId}&b=${compareWithId}`);
+  compareData = r.ok ? await r.json() : null;
+  render();
+}
+function closeCompare() { compareMode = false; render(); }
+
 // ---- estado guardado ----
 let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
@@ -502,8 +523,88 @@ function makeBreakdownRow(it: BoqItem): HTMLTableRowElement {
   return tr;
 }
 
+// ---- vista de comparación (B2) ----
+function renderCompare() {
+  const app = document.getElementById("app")!;
+  app.innerHTML = "";
+  const curName = boqList.find((b) => b.id === currentBoqId)?.projectName ?? "A";
+
+  const header = document.createElement("header");
+  const h1 = document.createElement("h1");
+  h1.textContent = `Comparar — ${curName}`;
+  header.append(h1, button("← Volver al editor", () => closeCompare()));
+  app.appendChild(header);
+
+  const wrap = document.createElement("div");
+  wrap.className = "wrap";
+
+  // Barra: selector del presupuesto B
+  const bar = document.createElement("div");
+  bar.className = "toolbar viewbar";
+  const lbl = document.createElement("span"); lbl.className = "rowbar-label"; lbl.textContent = "Comparar contra:";
+  const sel = document.createElement("select"); sel.className = "boq-select";
+  for (const b of boqList.filter((x) => x.id !== currentBoqId)) {
+    const o = document.createElement("option"); o.value = b.id;
+    o.textContent = `${b.projectName} — ${b.name} (${b.currency})`;
+    if (b.id === compareWithId) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => { compareWithId = sel.value; loadCompare(); });
+  bar.append(lbl, sel);
+  wrap.appendChild(bar);
+
+  if (!compareData) { wrap.appendChild(Object.assign(document.createElement("div"), { textContent: "Sin datos." })); app.appendChild(wrap); return; }
+  const d = compareData;
+
+  if (!d.sameCurrency) {
+    const warn = document.createElement("div"); warn.className = "compare-warn";
+    warn.textContent = `⚠ Monedas distintas (A: ${d.currencyA} vs B: ${d.currencyB}). La comparación es numérica, no convierte moneda.`;
+    wrap.appendChild(warn);
+  }
+
+  const fA = (n: number | null) => (n == null ? "—" : money.format(n));
+  const fmtDelta = (n: number | null, pct: number | null) => n == null ? "—" : `${n > 0 ? "+" : ""}${money.format(n)}${pct != null ? ` (${n > 0 ? "+" : ""}${pct}%)` : ""}`;
+
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr>
+    <th style="width:90px">Código</th><th>Descripción</th>
+    <th class="num" style="width:150px">A (dueño)</th><th class="num" style="width:150px">B (otro)</th>
+    <th class="num" style="width:170px">Δ (B − A)</th>
+  </tr></thead>`;
+  const tb = document.createElement("tbody");
+  for (const r of d.rows) {
+    const tr = document.createElement("tr");
+    const dpos = (r.deltaAmount ?? 0) > 0, dneg = (r.deltaAmount ?? 0) < 0;
+    const tag = r.side === "onlyA" ? ` <span class="badge a">solo dueño</span>` : r.side === "onlyB" ? ` <span class="badge b">solo B</span>` : "";
+    tr.innerHTML = `
+      <td class="code"><div class="cellpad">${r.code ?? ""}</div></td>
+      <td><div class="cellpad">${r.description}${tag}</div></td>
+      <td class="num"><div class="cellpad">${fA(r.amountA)}</div></td>
+      <td class="num"><div class="cellpad">${fA(r.amountB)}</div></td>
+      <td class="num ${dpos ? "delta-up" : dneg ? "delta-down" : ""}"><div class="cellpad">${fmtDelta(r.deltaAmount, r.deltaPct)}</div></td>`;
+    tb.appendChild(tr);
+  }
+  table.appendChild(tb);
+  const scroll = document.createElement("div"); scroll.className = "table-scroll"; scroll.appendChild(table);
+  wrap.appendChild(scroll);
+
+  // Resumen
+  const totals = document.createElement("div");
+  totals.className = "totals";
+  const dpos = d.deltaTotal > 0;
+  totals.innerHTML = `
+    <div class="row"><span>Total A (dueño)</span><span class="v">${money.format(d.totalA)}</span></div>
+    <div class="row"><span>Total B</span><span class="v">${money.format(d.totalB)}</span></div>
+    <div class="row total"><span>Δ Total</span><span class="v ${dpos ? "delta-up" : d.deltaTotal < 0 ? "delta-down" : ""}">${d.deltaTotal > 0 ? "+" : ""}${money.format(d.deltaTotal)}</span></div>
+    <div class="row" style="color:var(--muted);font-size:12px"><span>${d.counts.matched} emparejadas · ${d.counts.onlyA} solo dueño · ${d.counts.onlyB} solo B</span></div>`;
+  wrap.appendChild(totals);
+
+  app.appendChild(wrap);
+}
+
 // ---- render ----
 function render() {
+  if (compareMode) return renderCompare();
   amountCells.clear();
   markupAmountCells.clear();
   const app = document.getElementById("app")!;
@@ -542,6 +643,7 @@ function render() {
     button("💾 Guardar", () => save()),
     button("⬇ Excel", () => exportExcel()),
     button("⬆ Importar", () => importExcel()),
+    button("⇄ Comparar", () => openCompare()),
   );
   wrap.appendChild(toolbar);
 
