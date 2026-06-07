@@ -2,7 +2,8 @@
 // y puente al motor de cálculo (calcBoq carga desde DB y llama recalculate).
 import { eq } from "drizzle-orm";
 import type { AppDb } from "./db/client.js";
-import { projects, boqs, boqItems, markupRules } from "./db/schema.js";
+import { projects, boqs, boqItems, markupRules, boqSnapshots } from "./db/schema.js";
+import type { BoqSnapshot, SnapshotSummary } from "./snapshot.js";
 import { recalculate } from "./calc.js";
 import type {
   Project,
@@ -201,6 +202,56 @@ export function saveBoqContents(db: AppDb, boqId: string, items: BoqItem[], rule
     if (items.length) tx.insert(boqItems).values(items.map(itemToRow)).run();
     if (rules.length) tx.insert(markupRules).values(rules).run();
   });
+}
+
+// ---------- Snapshots / versiones (F3) ----------
+export function createSnapshot(db: AppDb, snap: BoqSnapshot): void {
+  db.insert(boqSnapshots)
+    .values({
+      id: snap.id,
+      boqId: snap.boqId,
+      label: snap.label,
+      note: snap.note ?? null,
+      createdAt: snap.createdAt,
+      frozenTotal: snap.frozenTotal,
+      currency: snap.currency,
+      payload: JSON.stringify(snap.payload),
+    })
+    .run();
+}
+
+/** Lista los snapshots de un BOQ (sin payload), más reciente primero. */
+export function listSnapshots(db: AppDb, boqId: string): SnapshotSummary[] {
+  return db
+    .select()
+    .from(boqSnapshots)
+    .where(eq(boqSnapshots.boqId, boqId))
+    .all()
+    .map((r) => ({
+      id: r.id,
+      boqId: r.boqId,
+      label: r.label,
+      note: r.note ?? undefined,
+      createdAt: r.createdAt,
+      frozenTotal: r.frozenTotal,
+      currency: r.currency,
+    }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export function getSnapshot(db: AppDb, snapshotId: string): BoqSnapshot | undefined {
+  const r = db.select().from(boqSnapshots).where(eq(boqSnapshots.id, snapshotId)).get();
+  if (!r) return undefined;
+  return {
+    id: r.id,
+    boqId: r.boqId,
+    label: r.label,
+    note: r.note ?? undefined,
+    createdAt: r.createdAt,
+    frozenTotal: r.frozenTotal,
+    currency: r.currency,
+    payload: JSON.parse(r.payload),
+  };
 }
 
 // ---------- Puente al cálculo ----------

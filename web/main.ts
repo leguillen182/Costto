@@ -162,6 +162,50 @@ async function loadCompare() {
 }
 function closeCompare() { compareMode = false; render(); }
 
+// ---- versiones / snapshots (F3) ----
+interface SnapshotSummary { id: string; boqId: string; label: string; note?: string; createdAt: string; frozenTotal: number; currency: string; }
+type SnapshotCompareData = CompareData & { snapshotLabel: string; snapshotCreatedAt: string };
+let snapshotMode = false;
+let snapshots: SnapshotSummary[] = [];
+let snapshotCompareId = ""; // "" = vista de lista; con id = comparación contra ese snapshot
+let snapshotCompareData: SnapshotCompareData | null = null;
+
+async function openVersiones() {
+  snapshotMode = true;
+  snapshotCompareId = "";
+  await loadSnapshots();
+}
+async function loadSnapshots() {
+  const r = await fetch(`/api/boq/${currentBoqId}/snapshots`);
+  snapshots = r.ok ? (await r.json()).snapshots : [];
+  render();
+}
+async function freezeSnapshot() {
+  const label = prompt("Etiqueta de la versión:", "Rev.0 aprobado");
+  if (label == null) return;
+  if (dirty && !confirm("Hay cambios sin guardar. Se congelará el estado YA GUARDADO en la base, no los cambios pendientes. ¿Continuar?")) return;
+  const r = await fetch(`/api/boq/${currentBoqId}/snapshots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!r.ok) { alert("No se pudo congelar la versión."); return; }
+  await loadSnapshots();
+}
+async function compareWithSnapshot(id: string) {
+  const r = await fetch(`/api/boq/${currentBoqId}/compare-snapshot?snapshot=${id}`);
+  snapshotCompareData = r.ok ? await r.json() : null;
+  snapshotCompareId = id;
+  render();
+}
+function backToSnapshotList() { snapshotCompareId = ""; render(); }
+function closeVersiones() { snapshotMode = false; render(); }
+
+function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" });
+}
+
 // ---- estado guardado ----
 let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
@@ -554,11 +598,17 @@ function renderCompare() {
   wrap.appendChild(bar);
 
   if (!compareData) { wrap.appendChild(Object.assign(document.createElement("div"), { textContent: "Sin datos." })); app.appendChild(wrap); return; }
-  const d = compareData;
+  appendCompareBody(wrap, compareData, { a: "A (dueño)", b: "B (otro)", badgeA: "solo dueño", badgeB: "solo B" });
+  app.appendChild(wrap);
+}
 
+// Tabla + resumen de una comparación. Reusada por B2 (presupuesto vs presupuesto)
+// y F3 (estado vivo vs snapshot). L = etiquetas de los lados A/B.
+interface CompareLabels { a: string; b: string; badgeA: string; badgeB: string; }
+function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) {
   if (!d.sameCurrency) {
     const warn = document.createElement("div"); warn.className = "compare-warn";
-    warn.textContent = `⚠ Monedas distintas (A: ${d.currencyA} vs B: ${d.currencyB}). La comparación es numérica, no convierte moneda.`;
+    warn.textContent = `⚠ Monedas distintas (${L.a}: ${d.currencyA} vs ${L.b}: ${d.currencyB}). La comparación es numérica, no convierte moneda.`;
     wrap.appendChild(warn);
   }
 
@@ -568,14 +618,14 @@ function renderCompare() {
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr>
     <th style="width:90px">Código</th><th>Descripción</th>
-    <th class="num" style="width:150px">A (dueño)</th><th class="num" style="width:150px">B (otro)</th>
-    <th class="num" style="width:170px">Δ (B − A)</th>
+    <th class="num" style="width:150px">${L.a}</th><th class="num" style="width:150px">${L.b}</th>
+    <th class="num" style="width:170px">Δ (${L.b} − ${L.a})</th>
   </tr></thead>`;
   const tb = document.createElement("tbody");
   for (const r of d.rows) {
     const tr = document.createElement("tr");
     const dpos = (r.deltaAmount ?? 0) > 0, dneg = (r.deltaAmount ?? 0) < 0;
-    const tag = r.side === "onlyA" ? ` <span class="badge a">solo dueño</span>` : r.side === "onlyB" ? ` <span class="badge b">solo B</span>` : "";
+    const tag = r.side === "onlyA" ? ` <span class="badge a">${L.badgeA}</span>` : r.side === "onlyB" ? ` <span class="badge b">${L.badgeB}</span>` : "";
     tr.innerHTML = `
       <td class="code"><div class="cellpad">${r.code ?? ""}</div></td>
       <td><div class="cellpad">${r.description}${tag}</div></td>
@@ -588,23 +638,93 @@ function renderCompare() {
   const scroll = document.createElement("div"); scroll.className = "table-scroll"; scroll.appendChild(table);
   wrap.appendChild(scroll);
 
-  // Resumen
   const totals = document.createElement("div");
   totals.className = "totals";
   const dpos = d.deltaTotal > 0;
   totals.innerHTML = `
-    <div class="row"><span>Total A (dueño)</span><span class="v">${money.format(d.totalA)}</span></div>
-    <div class="row"><span>Total B</span><span class="v">${money.format(d.totalB)}</span></div>
+    <div class="row"><span>Total ${L.a}</span><span class="v">${money.format(d.totalA)}</span></div>
+    <div class="row"><span>Total ${L.b}</span><span class="v">${money.format(d.totalB)}</span></div>
     <div class="row total"><span>Δ Total</span><span class="v ${dpos ? "delta-up" : d.deltaTotal < 0 ? "delta-down" : ""}">${d.deltaTotal > 0 ? "+" : ""}${money.format(d.deltaTotal)}</span></div>
-    <div class="row" style="color:var(--muted);font-size:12px"><span>${d.counts.matched} emparejadas · ${d.counts.onlyA} solo dueño · ${d.counts.onlyB} solo B</span></div>`;
+    <div class="row" style="color:var(--muted);font-size:12px"><span>${d.counts.matched} emparejadas · ${d.counts.onlyA} ${L.badgeA} · ${d.counts.onlyB} ${L.badgeB}</span></div>`;
   wrap.appendChild(totals);
+}
 
+function renderVersiones() {
+  const app = document.getElementById("app")!;
+  app.innerHTML = "";
+  const curName = boqList.find((b) => b.id === currentBoqId)?.projectName ?? "";
+
+  const header = document.createElement("header");
+  const h1 = document.createElement("h1");
+  h1.textContent = `Versiones — ${curName}`;
+  header.append(h1, button("← Volver al editor", () => closeVersiones()));
+  app.appendChild(header);
+
+  const wrap = document.createElement("div");
+  wrap.className = "wrap";
+
+  // Vista de comparación contra un snapshot
+  if (snapshotCompareId) {
+    const snap = snapshots.find((s) => s.id === snapshotCompareId);
+    const bar = document.createElement("div");
+    bar.className = "toolbar viewbar";
+    const lbl = document.createElement("span"); lbl.className = "rowbar-label";
+    lbl.textContent = snap ? `Comparando estado actual contra «${snap.label}» (${fmtDate(snap.createdAt)})` : "Comparación";
+    bar.append(button("← Versiones", () => backToSnapshotList()), lbl);
+    wrap.appendChild(bar);
+
+    if (!snapshotCompareData) {
+      wrap.appendChild(Object.assign(document.createElement("div"), { textContent: "Sin datos." }));
+    } else {
+      appendCompareBody(wrap, snapshotCompareData, { a: snap?.label ?? "Rev.0", b: "Actual", badgeA: "solo Rev.0", badgeB: "nueva" });
+    }
+    app.appendChild(wrap);
+    return;
+  }
+
+  // Vista de lista de versiones
+  const bar = document.createElement("div");
+  bar.className = "toolbar viewbar";
+  bar.append(button("📌 Congelar versión actual", () => freezeSnapshot(), "primary"));
+  wrap.appendChild(bar);
+
+  if (snapshots.length === 0) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "padding:24px;color:var(--muted)";
+    empty.textContent = "Aún no hay versiones congeladas. Congela una «Rev.0 aprobado» para tener una línea base contra la cual comparar.";
+    wrap.appendChild(empty);
+    app.appendChild(wrap);
+    return;
+  }
+
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr>
+    <th>Versión</th><th style="width:200px">Fecha</th>
+    <th class="num" style="width:170px">Total congelado</th><th style="width:160px"></th>
+  </tr></thead>`;
+  const tb = document.createElement("tbody");
+  for (const s of snapshots) {
+    const tr = document.createElement("tr");
+    const td1 = document.createElement("td"); td1.innerHTML = `<div class="cellpad"><strong>${s.label}</strong></div>`;
+    const td2 = document.createElement("td"); td2.innerHTML = `<div class="cellpad">${fmtDate(s.createdAt)}</div>`;
+    const td3 = document.createElement("td"); td3.className = "num"; td3.innerHTML = `<div class="cellpad">${money.format(s.frozenTotal)}</div>`;
+    const td4 = document.createElement("td");
+    const pad = document.createElement("div"); pad.className = "cellpad";
+    pad.appendChild(button("⇄ Comparar con actual", () => compareWithSnapshot(s.id)));
+    td4.appendChild(pad);
+    tr.append(td1, td2, td3, td4);
+    tb.appendChild(tr);
+  }
+  table.appendChild(tb);
+  const scroll = document.createElement("div"); scroll.className = "table-scroll"; scroll.appendChild(table);
+  wrap.appendChild(scroll);
   app.appendChild(wrap);
 }
 
 // ---- render ----
 function render() {
   if (compareMode) return renderCompare();
+  if (snapshotMode) return renderVersiones();
   amountCells.clear();
   markupAmountCells.clear();
   const app = document.getElementById("app")!;
@@ -644,6 +764,7 @@ function render() {
     button("⬇ Excel", () => exportExcel()),
     button("⬆ Importar", () => importExcel()),
     button("⇄ Comparar", () => openCompare()),
+    button("🔖 Versiones", () => openVersiones()),
   );
   wrap.appendChild(toolbar);
 

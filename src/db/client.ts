@@ -74,6 +74,17 @@ function migrate(sqlite: Database.Database): void {
       name TEXT NOT NULL,
       dimension TEXT
     );
+    CREATE TABLE IF NOT EXISTS boq_snapshots (
+      id TEXT PRIMARY KEY,
+      boq_id TEXT NOT NULL REFERENCES boqs(id),
+      label TEXT NOT NULL,
+      note TEXT,
+      created_at TEXT NOT NULL,
+      frozen_total REAL NOT NULL,
+      currency TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_snapshots_boq ON boq_snapshots(boq_id);
   `);
 
   // Migración aditiva para data.db existentes (CREATE TABLE IF NOT EXISTS no altera tablas previas).

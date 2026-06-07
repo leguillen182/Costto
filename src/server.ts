@@ -15,11 +15,15 @@ import {
   updateBoqDetailLevel,
   listBoqs,
   createBudget,
+  createSnapshot,
+  listSnapshots,
+  getSnapshot,
 } from "./repo.js";
 import { randomUUID } from "node:crypto";
 import { buildWorkbook } from "./export.js";
 import { parseWorkbook } from "./import.js";
 import { compareBoqs } from "./compare.js";
+import { buildSnapshot, snapshotToCompareInputs, toSummary } from "./snapshot.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
 const { db } = createDb("data.db");
@@ -119,6 +123,49 @@ const server = createServer(async (req, res) => {
       const markups = getMarkups(db, id); // preservar markups existentes
       saveBoqContents(db, id, items, markups);
       return json(res, 200, { ok: true, rowsRead, calc: calcBoq(db, id) });
+    }
+
+    // Versiones / snapshots (F3)
+    const snapList = url.pathname.match(/^\/api\/boq\/([^/]+)\/snapshots$/);
+    // Listar snapshots: GET /api/boq/:id/snapshots
+    if (snapList && req.method === "GET") {
+      const id = snapList[1]!;
+      if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
+      return json(res, 200, { snapshots: listSnapshots(db, id) });
+    }
+    // Congelar estado actual: POST /api/boq/:id/snapshots  body { label, note }
+    if (snapList && req.method === "POST") {
+      const id = snapList[1]!;
+      const boq = getBoq(db, id);
+      if (!boq) return json(res, 404, { error: "BOQ no encontrado" });
+      const body = JSON.parse((await readBody(req)) || "{}") as { label?: string; note?: string };
+      const snap = buildSnapshot({
+        id: randomUUID(),
+        boqId: id,
+        label: body.label ?? "",
+        note: body.note,
+        createdAt: new Date().toISOString(),
+        boq,
+        items: getItems(db, id),
+        markups: getMarkups(db, id),
+        calc: calcBoq(db, id),
+      });
+      createSnapshot(db, snap);
+      return json(res, 201, { snapshot: toSummary(snap) });
+    }
+
+    // Comparar estado vivo contra un snapshot: GET /api/boq/:id/compare-snapshot?snapshot=SNAPID
+    const snapCmp = url.pathname.match(/^\/api\/boq\/([^/]+)\/compare-snapshot$/);
+    if (snapCmp && req.method === "GET") {
+      const id = snapCmp[1]!;
+      const live = getBoq(db, id);
+      if (!live) return json(res, 404, { error: "BOQ no encontrado" });
+      const snap = getSnapshot(db, url.searchParams.get("snapshot") ?? "");
+      if (!snap || snap.boqId !== id) return json(res, 404, { error: "Snapshot no encontrado" });
+      // A = snapshot congelado (baseline); B = estado vivo → Δ = vivo − Rev.0
+      const base = snapshotToCompareInputs(snap);
+      const result = compareBoqs(base.boq, base.items, live, getItems(db, id));
+      return json(res, 200, { ...result, snapshotLabel: snap.label, snapshotCreatedAt: snap.createdAt });
     }
 
     const m = url.pathname.match(/^\/api\/boq\/([^/]+)$/);

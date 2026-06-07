@@ -7,10 +7,16 @@ import {
   insertMarkups,
   getBoq,
   getItems,
+  getMarkups,
   calcBoq,
   listBoqs,
   createBudget,
+  createSnapshot,
+  listSnapshots,
+  getSnapshot,
+  saveBoqContents,
 } from "./repo.js";
+import { buildSnapshot } from "./snapshot.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
 let db: AppDb;
@@ -97,6 +103,47 @@ describe("repo — persistencia y round-trip", () => {
     insertItems(db, [{ id: "z1", boqId: "b2", parentId: null, sortOrder: 1, description: "otra", nodeType: "line", lineType: "unit_price", quantity: 2, unitRate: 1000 }]);
     expect(calcBoq(db, "b1").subtotal).toBe(120000);
     expect(calcBoq(db, "b2").subtotal).toBe(2000);
+  });
+});
+
+describe("repo — snapshots / versiones (F3)", () => {
+  function snap(id: string, label: string, createdAt: string) {
+    const boq = getBoq(db, "b1")!;
+    const calc = calcBoq(db, "b1");
+    return buildSnapshot({ id, boqId: "b1", label, createdAt, boq, items: getItems(db, "b1"), markups: getMarkups(db, "b1"), calc });
+  }
+
+  it("guarda y relee un snapshot con payload completo", () => {
+    insertItems(db, items);
+    createSnapshot(db, snap("s1", "Rev.0 aprobado", "2026-06-07T12:00:00Z"));
+
+    const read = getSnapshot(db, "s1")!;
+    expect(read.label).toBe("Rev.0 aprobado");
+    expect(read.frozenTotal).toBe(120000);
+    expect(read.payload.items).toHaveLength(5);
+    expect(read.payload.items.find((x) => x.id === "l1")!.unitRate).toBe(350);
+  });
+
+  it("el snapshot no cambia si luego se edita el presupuesto vivo", () => {
+    insertItems(db, items);
+    createSnapshot(db, snap("s1", "Rev.0", "2026-06-07T12:00:00Z"));
+
+    // editar el vivo: subir la excavación a 999
+    const edited = items.map((i) => (i.id === "l1" ? { ...i, unitRate: 999 } : i));
+    saveBoqContents(db, "b1", edited, []);
+
+    expect(getItems(db, "b1").find((x) => x.id === "l1")!.unitRate).toBe(999); // vivo cambió
+    expect(getSnapshot(db, "s1")!.payload.items.find((x) => x.id === "l1")!.unitRate).toBe(350); // snapshot intacto
+  });
+
+  it("listSnapshots devuelve resúmenes sin payload, más reciente primero", () => {
+    insertItems(db, items);
+    createSnapshot(db, snap("s1", "Rev.0", "2026-06-07T10:00:00Z"));
+    createSnapshot(db, snap("s2", "Rev.1", "2026-06-07T15:00:00Z"));
+    const list = listSnapshots(db, "b1");
+    expect(list).toHaveLength(2);
+    expect(list[0]!.id).toBe("s2"); // más reciente primero
+    expect(list[0]!).not.toHaveProperty("payload");
   });
 });
 
