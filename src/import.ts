@@ -16,6 +16,9 @@ const HEADER_ALIASES: Record<string, string[]> = {
 export interface ImportResult {
   items: BoqItem[];
   rowsRead: number;
+  /** true si se importaron varias filas pero NINGUNA quedó anidada (sin jerarquía).
+   *  Señal de un Excel sin indentación: el usuario esperaba capítulos y todo cayó en raíz. */
+  flat: boolean;
 }
 
 const toNum = (v: unknown): number | null => {
@@ -32,7 +35,7 @@ export async function parseWorkbook(buffer: Buffer, boqId: string): Promise<Impo
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   const ws = wb.worksheets[0];
-  if (!ws) return { items: [], rowsRead: 0 };
+  if (!ws) return { items: [], rowsRead: 0, flat: false };
 
   // Localizar la fila de encabezados (la que tiene "Descripción").
   let headerRowIdx = -1;
@@ -51,7 +54,7 @@ export async function parseWorkbook(buffer: Buffer, boqId: string): Promise<Impo
       Object.assign(colMap, found);
     }
   }
-  if (headerRowIdx === -1) return { items: [], rowsRead: 0 };
+  if (headerRowIdx === -1) return { items: [], rowsRead: 0, flat: false };
 
   const items: BoqItem[] = [];
   const stack: { depth: number; id: string }[] = []; // solo grupos
@@ -98,5 +101,7 @@ export async function parseWorkbook(buffer: Buffer, boqId: string): Promise<Impo
     rowsRead++;
   }
 
-  return { items, rowsRead };
+  // "Plano" = se leyeron varias filas pero ninguna quedó anidada (todas en raíz).
+  const flat = items.length >= 3 && items.every((i) => i.parentId === null);
+  return { items, rowsRead, flat };
 }

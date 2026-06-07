@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import ExcelJS from "exceljs";
 import { buildWorkbook } from "./export.js";
 import { parseWorkbook } from "./import.js";
 import { recalculate } from "./calc.js";
@@ -20,10 +21,11 @@ describe("import — round-trip export→import", () => {
     const wb = await buildWorkbook(boq, items, calc);
     const buf = Buffer.from(await wb.xlsx.writeBuffer());
 
-    const { items: parsed, rowsRead } = await parseWorkbook(buf, "b1");
+    const { items: parsed, rowsRead, flat } = await parseWorkbook(buf, "b1");
 
     expect(rowsRead).toBe(5);
     expect(parsed).toHaveLength(5);
+    expect(flat).toBe(false); // el export trae jerarquía (indentación) → no es plano
 
     const byDesc = (d: string) => parsed.find((p) => p.description === d)!;
     const mov = byDesc("Movimiento de tierra");
@@ -53,5 +55,25 @@ describe("import — round-trip export→import", () => {
     const { items: parsed } = await parseWorkbook(buf, "b1");
     // No debe aparecer ninguna "partida" llamada ITBIS/Subtotal/TOTAL
     expect(parsed.some((p) => /itbis|subtotal|total/i.test(p.description))).toBe(false);
+  });
+});
+
+describe("import — detección de import plano (#8)", () => {
+  // Excel de terceros SIN indentación en la columna Descripción → no se reconstruye jerarquía.
+  async function flatWorkbook(): Promise<Buffer> {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("BOQ");
+    ws.addRow(["Código", "Descripción", "Unidad", "Cantidad", "P. Unitario"]);
+    ws.addRow(["01.01", "Excavación", "m³", 100, 350]);
+    ws.addRow(["01.02", "Relleno", "m³", 40, 250]);
+    ws.addRow(["02.01", "Diseño", "global", 1, 75000]);
+    return Buffer.from(await wb.xlsx.writeBuffer());
+  }
+
+  it("marca flat=true cuando varias filas quedan todas en raíz", async () => {
+    const { items: parsed, rowsRead, flat } = await parseWorkbook(await flatWorkbook(), "b1");
+    expect(rowsRead).toBe(3);
+    expect(flat).toBe(true);
+    expect(parsed.every((p) => p.parentId === null)).toBe(true);
   });
 });
