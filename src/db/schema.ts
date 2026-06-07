@@ -60,3 +60,16 @@ export const unitsOfMeasure = sqliteTable("units_of_measure", {
   name: text("name").notNull(),
   dimension: text("dimension"),
 });
+
+// Versiones / snapshots congelados del presupuesto (F3). El payload guarda el
+// contenido completo (boq + items + markups) como JSON inmutable.
+export const boqSnapshots = sqliteTable("boq_snapshots", {
+  id: text("id").primaryKey(),
+  boqId: text("boq_id").notNull(),
+  label: text("label").notNull(),
+  note: text("note"),
+  createdAt: text("created_at").notNull(),
+  frozenTotal: real("frozen_total").notNull(),
+  currency: text("currency").notNull(),
+  payload: text("payload").notNull(), // JSON: { boq, items, markups }
+});
