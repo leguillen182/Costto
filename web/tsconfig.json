@@ -1,0 +1,16 @@
+{
+  "//": "Typecheck del editor (capa DOM). Separado del tsconfig raíz (node puro, sin lib DOM).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["vitest/globals"]
+  },
+  "include": ["**/*.ts"]
+}

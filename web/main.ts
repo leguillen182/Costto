@@ -2,6 +2,7 @@
 // Reusa el motor de cálculo puro (../src/calc). Carga/guarda vía API (/api) → SQLite.
 import { recalculate, componentSum } from "../src/calc";
 import { validate } from "../src/validate";
+import * as tree from "../src/tree";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
 
 const uid = () => crypto.randomUUID();
@@ -90,7 +91,11 @@ function importExcel() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       await load();
-      alert(`Importadas ${d.rowsRead} filas.`);
+      alert(
+        d.flat
+          ? `Importadas ${d.rowsRead} filas sin jerarquía: todas quedaron en raíz. Si tu Excel tenía capítulos, revisa que las partidas usen indentación en la columna Descripción.`
+          : `Importadas ${d.rowsRead} filas.`,
+      );
     } catch (e) {
       setStatus("error");
       alert(`Error al importar: ${e}`);
@@ -219,66 +224,33 @@ function setStatus(s: "saved" | "dirty" | "saving" | "error") {
 function markDirty() { setStatus("dirty"); }
 
 // ---- modelo / árbol ----
+// La lógica de árbol (pura) vive en src/tree.ts; aquí solo se envuelve para
+// reasignar `items`, marcar dirty, re-renderizar y reposicionar el foco.
 function ordered(): { item: BoqItem; depth: number }[] {
-  const byParent = new Map<string | null, BoqItem[]>();
-  for (const it of items) {
-    const arr = byParent.get(it.parentId);
-    if (arr) arr.push(it);
-    else byParent.set(it.parentId, [it]);
-  }
-  for (const arr of byParent.values()) arr.sort((a, b) => a.sortOrder - b.sortOrder);
-  const out: { item: BoqItem; depth: number }[] = [];
-  const walk = (parent: string | null, depth: number) => {
-    for (const it of byParent.get(parent) ?? []) {
-      out.push({ item: it, depth });
-      walk(it.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return out;
-}
-
-// Renumera hermanos a 1..n (enteros) preservando el orden → evita truncado al persistir.
-function normalizeSiblings(parentId: string | null) {
-  const sibs = items.filter((i) => i.parentId === parentId).sort((a, b) => a.sortOrder - b.sortOrder);
-  sibs.forEach((s, i) => (s.sortOrder = i + 1));
+  return tree.ordered(items);
 }
 
 function addGroup(parentId: string | null) {
-  const it: BoqItem = { id: uid(), boqId: boq.id, parentId, sortOrder: 9999, code: "", description: "", nodeType: "group" };
-  items.push(it);
-  normalizeSiblings(parentId);
+  const id = uid();
+  items = tree.addGroup(items, boq.id, parentId, id);
   markDirty();
   render();
-  focusCell(it.id, "code");
+  focusCell(id, "code");
 }
 
 function addLine(parentId: string | null, afterSort?: number) {
-  const it: BoqItem = { id: uid(), boqId: boq.id, parentId, sortOrder: afterSort != null ? afterSort + 0.5 : 9999, code: "", description: "", nodeType: "line", lineType: "unit_price", quantity: 0, unit: "", unitRate: 0 };
-  items.push(it);
-  normalizeSiblings(parentId);
+  const id = uid();
+  items = tree.addLine(items, boq.id, parentId, id, afterSort);
   markDirty();
   render();
-  focusCell(it.id, "description");
+  focusCell(id, "description");
 }
 
-// Indenta: el ítem pasa a ser hijo de su hermano anterior.
-// Si ese hermano era una línea, se convierte en capítulo (grupo) para no romper el rollup.
+// Indenta: el ítem pasa a ser hijo de su hermano anterior (que se vuelve grupo si era línea).
 function indent(it: BoqItem, col: Col) {
-  const sibs = items.filter((i) => i.parentId === it.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
-  const idx = sibs.findIndex((s) => s.id === it.id);
-  if (idx <= 0) return; // sin hermano anterior, no se puede indentar
-  const newParent = sibs[idx - 1]!;
-  if (newParent.nodeType === "line") {
-    newParent.nodeType = "group";
-    newParent.lineType = undefined;
-    newParent.quantity = undefined;
-    newParent.unit = undefined;
-    newParent.unitRate = undefined;
-  }
-  it.parentId = newParent.id;
-  it.sortOrder = (items.filter((i) => i.parentId === newParent.id).length || 0) + 1;
-  normalizeSiblings(newParent.id);
+  const next = tree.indent(items, it.id);
+  if (next === items) return; // sin hermano anterior → no-op
+  items = next;
   markDirty();
   render();
   focusCell(it.id, col);
@@ -286,12 +258,9 @@ function indent(it: BoqItem, col: Col) {
 
 // Desindenta: el ítem sube un nivel, quedando justo después de su antiguo padre.
 function outdent(it: BoqItem, col: Col) {
-  if (it.parentId === null) return;
-  const parent = items.find((i) => i.id === it.parentId);
-  if (!parent) return;
-  it.parentId = parent.parentId;
-  it.sortOrder = parent.sortOrder + 0.5;
-  normalizeSiblings(parent.parentId);
+  const next = tree.outdent(items, it.id);
+  if (next === items) return;
+  items = next;
   markDirty();
   render();
   focusCell(it.id, col);
@@ -320,13 +289,9 @@ function withSelected(fn: (it: BoqItem) => void) {
 // Mueve la fila seleccionada entre sus hermanos (dir -1 sube, +1 baja).
 function move(dir: -1 | 1) {
   if (!selectedId) return;
-  const it = items.find((i) => i.id === selectedId);
-  if (!it) return;
-  const sibs = items.filter((i) => i.parentId === it.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
-  const idx = sibs.findIndex((s) => s.id === it.id);
-  const swap = sibs[idx + dir];
-  if (!swap) return;
-  const tmp = it.sortOrder; it.sortOrder = swap.sortOrder; swap.sortOrder = tmp;
+  const next = tree.move(items, selectedId, dir);
+  if (next === items) return; // ya está en el extremo → no-op
+  items = next;
   markDirty();
   render();
 }
@@ -345,7 +310,7 @@ function toggleExpand(id: string) {
 }
 // Actualiza un componente de tarifa y deriva el P.U. = suma de componentes.
 function setRatePart(it: BoqItem, key: (typeof RATE_PARTS)[number]["key"], value: number | null) {
-  (it as Record<string, unknown>)[key] = value;
+  it[key] = value;
   const sum = componentSum(it);
   it.unitRate = sum; // P.U. derivado (null si se borraron todos los componentes)
   // Sincronizar la celda de P.U. en vivo (sin re-render, para no perder foco).
@@ -363,15 +328,7 @@ function hasBreakdown(it: BoqItem): boolean {
 }
 
 function removeItem(id: string) {
-  const toDelete = new Set<string>([id]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const it of items) {
-      if (it.parentId && toDelete.has(it.parentId) && !toDelete.has(it.id)) { toDelete.add(it.id); changed = true; }
-    }
-  }
-  items = items.filter((i) => !toDelete.has(i.id));
+  items = tree.removeItem(items, id);
   markDirty();
   render();
 }
@@ -476,6 +433,16 @@ function focusCell(id: string, col: Col) {
   if (el) { el.focus(); el.select?.(); }
 }
 
+// Asigna el valor editado a la propiedad de BoqItem con el tipo correcto (sin `as any`).
+// `col` viene de EDITABLE (⊂ keyof BoqItem); las numéricas se parsean, el resto es texto.
+function setField(it: BoqItem, col: Col, raw: string): void {
+  if (col === "quantity" || col === "unitRate") {
+    it[col] = raw === "" ? null : Number(raw);
+  } else {
+    it[col] = raw;
+  }
+}
+
 function makeCell(it: BoqItem, col: Col): HTMLInputElement {
   const input = document.createElement("input");
   input.className = "cell";
@@ -483,7 +450,7 @@ function makeCell(it: BoqItem, col: Col): HTMLInputElement {
   input.dataset.col = col;
   const isNum = NUMERIC.includes(col);
   input.type = isNum ? "number" : "text";
-  const val = (it as any)[col];
+  const val = it[col];
   input.value = val == null ? "" : String(val);
   if (col === "description") input.placeholder = it.nodeType === "group" ? "Nombre del capítulo…" : "Descripción de la partida…";
 
@@ -496,8 +463,7 @@ function makeCell(it: BoqItem, col: Col): HTMLInputElement {
 
   input.addEventListener("input", () => {
     if (input.readOnly) return;
-    if (isNum) (it as any)[col] = input.value === "" ? null : Number(input.value);
-    else (it as any)[col] = input.value;
+    setField(it, col, input.value);
     markDirty();
     recompute();
   });
@@ -544,7 +510,7 @@ function makeBreakdownRow(it: BoqItem): HTMLTableRowElement {
     const input = document.createElement("input");
     input.type = "number";
     input.className = "cell";
-    const v = (it as Record<string, unknown>)[part.key] as number | null | undefined;
+    const v = it[part.key];
     input.value = v == null ? "" : String(v);
     input.addEventListener("input", () => {
       setRatePart(it, part.key, input.value === "" ? null : Number(input.value));
@@ -937,8 +903,14 @@ function selectInput(opts: [string, string][], val: string): HTMLSelectElement {
   return s;
 }
 
-window.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
-});
+// Arranque de la app: registra el atajo global de guardado y carga los datos.
+// Exportado para que los tests lo invoquen tras montar el DOM y mockear fetch.
+export function start() {
+  window.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
+  });
+  return init();
+}
 
-init();
+// Auto-arranque solo en el navegador real (Vite dev/build); en Vitest MODE === "test" → no arranca.
+if (import.meta.env.MODE !== "test") start();

@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     root: ".",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "web/**/*.test.ts"],
+    // Los tests de src/ son lógica pura/node; solo los de web/ necesitan DOM.
+    environment: "node",
+    environmentMatchGlobs: [["web/**", "jsdom"]],
   },
 });

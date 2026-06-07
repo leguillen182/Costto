@@ -133,10 +133,10 @@ export function createApp(db: AppDb) {
       const id = im[1]!;
       if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
       const buf = await readBodyBuffer(req);
-      const { items, rowsRead } = await parseWorkbook(buf, id);
+      const { items, rowsRead, flat } = await parseWorkbook(buf, id);
       const markups = getMarkups(db, id); // preservar markups existentes
       saveBoqContents(db, id, items, markups);
-      return json(res, 200, { ok: true, rowsRead, calc: calcBoq(db, id) });
+      return json(res, 200, { ok: true, rowsRead, flat, calc: calcBoq(db, id) });
     }
 
     // Versiones / snapshots (F3)
@@ -219,6 +219,7 @@ const PORT = 8787;
 // Arranca solo al ejecutar directamente (tsx src/server.ts); no al importar en tests.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { db } = createDb("data.db");
-  seedIfEmpty(db);
+  // Datos demo solo cuando se pide explícitamente (BOQ_SEED=1) — nunca por accidente en producción.
+  if (process.env.BOQ_SEED === "1") seedIfEmpty(db);
   createApp(db).listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
 }
