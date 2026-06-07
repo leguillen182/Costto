@@ -1,7 +1,7 @@
 // Backend HTTP ligero (módulo http nativo) para el editor de BOQ.
 // Expone el repositorio sobre REST. DB persistente en data.db.
 import { createServer } from "node:http";
-import { createDb } from "./db/client.js";
+import { createDb, type AppDb } from "./db/client.js";
 import {
   getBoq,
   getItems,
@@ -26,10 +26,23 @@ import { compareBoqs } from "./compare.js";
 import { buildSnapshot, snapshotToCompareInputs, toSummary } from "./snapshot.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
-const { db } = createDb("data.db");
-seedIfEmpty();
+// Error con código HTTP para distinguir 4xx (cliente) de 5xx (interno) en el catch global.
+class HttpError extends Error {
+  constructor(public code: number, message: string) {
+    super(message);
+  }
+}
 
-function seedIfEmpty() {
+// Parseo seguro del cuerpo JSON: body malformado → 400 (no 500 con stack filtrado).
+function parseBody<T>(raw: string): T {
+  try {
+    return JSON.parse(raw || "{}") as T;
+  } catch {
+    throw new HttpError(400, "Cuerpo JSON inválido");
+  }
+}
+
+export function seedIfEmpty(db: AppDb) {
   if (getBoq(db, "b1")) return;
   createProject(db, { id: "p1", name: "Torre A", baseCurrency: "DOP" });
   createBoq(db, { id: "b1", projectId: "p1", name: "Presupuesto base — Torre A", kind: "owner_budget", currency: "DOP", roundingDecimals: 2 });
@@ -66,7 +79,8 @@ function json(res: import("node:http").ServerResponse, code: number, body: unkno
   res.end(JSON.stringify(body));
 }
 
-const server = createServer(async (req, res) => {
+export function createApp(db: AppDb) {
+  return createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
 
@@ -76,7 +90,7 @@ const server = createServer(async (req, res) => {
     }
     // Crear presupuesto (proyecto + BOQ): POST /api/boqs
     if (url.pathname === "/api/boqs" && req.method === "POST") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { projectName?: string; boqName?: string; currency?: string };
+      const body = parseBody<{ projectName?: string; boqName?: string; currency?: string }>(await readBody(req));
       const id = createBudget(db, {
         projectId: randomUUID(),
         boqId: randomUUID(),
@@ -138,7 +152,7 @@ const server = createServer(async (req, res) => {
       const id = snapList[1]!;
       const boq = getBoq(db, id);
       if (!boq) return json(res, 404, { error: "BOQ no encontrado" });
-      const body = JSON.parse((await readBody(req)) || "{}") as { label?: string; note?: string };
+      const body = parseBody<{ label?: string; note?: string }>(await readBody(req));
       const snap = buildSnapshot({
         id: randomUUID(),
         boqId: id,
@@ -180,11 +194,11 @@ const server = createServer(async (req, res) => {
     if (m && req.method === "PUT") {
       const id = m[1]!;
       if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
-      const body = JSON.parse((await readBody(req)) || "{}") as {
+      const body = parseBody<{
         items?: BoqItem[];
         markups?: MarkupRule[];
         detailLevel?: "simple" | "detailed";
-      };
+      }>(await readBody(req));
       saveBoqContents(db, id, body.items ?? [], body.markups ?? []);
       if (body.detailLevel === "simple" || body.detailLevel === "detailed") {
         updateBoqDetailLevel(db, id, body.detailLevel);
@@ -194,9 +208,17 @@ const server = createServer(async (req, res) => {
 
     json(res, 404, { error: "ruta no encontrada" });
   } catch (err) {
-    json(res, 500, { error: String(err) });
+    if (err instanceof HttpError) return json(res, err.code, { error: err.message });
+    console.error("Error no controlado:", err); // log completo del lado servidor
+    json(res, 500, { error: "Error interno del servidor" }); // mensaje genérico, sin filtrar internos
   }
-});
+  });
+}
 
 const PORT = 8787;
-server.listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
+// Arranca solo al ejecutar directamente (tsx src/server.ts); no al importar en tests.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const { db } = createDb("data.db");
+  seedIfEmpty(db);
+  createApp(db).listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
+}

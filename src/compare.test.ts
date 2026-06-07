@@ -56,4 +56,12 @@ describe("compareBoqs", () => {
     const r = compareBoqs(boqA, itemsA, usd, itemsB);
     expect(r.sameCurrency).toBe(false);
   });
+
+  it("usa roundingDecimals del presupuesto base (A) para los deltas", () => {
+    const a4: Boq = { ...boqA, roundingDecimals: 4 };
+    const b4: Boq = { ...boqB, roundingDecimals: 4 };
+    const r = compareBoqs(a4, [line("A", "X", 1, 100.1234)], b4, [line("B", "X", 1, 100.1239)]);
+    // Con 4 decimales el delta sobrevive; con el viejo redondeo fijo a 2 daría 0.00.
+    expect(r.rows[0]!.deltaAmount).toBeCloseTo(0.0005, 4);
+  });
 });
