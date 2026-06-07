@@ -24,6 +24,7 @@ import { buildWorkbook } from "./export.js";
 import { parseWorkbook } from "./import.js";
 import { compareBoqs } from "./compare.js";
 import { buildSnapshot, snapshotToCompareInputs, toSummary } from "./snapshot.js";
+import { backupDb } from "./backup.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
 // Error con código HTTP para distinguir 4xx (cliente) de 5xx (interno) en el catch global.
@@ -79,7 +80,9 @@ function json(res: import("node:http").ServerResponse, code: number, body: unkno
   res.end(JSON.stringify(body));
 }
 
-export function createApp(db: AppDb) {
+// `onMutate` se invoca tras cada operación que persiste cambios (guardar/importar/congelar);
+// el arranque lo usa para respaldar el data.db. En tests se omite (no-op).
+export function createApp(db: AppDb, onMutate: () => void = () => {}) {
   return createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -136,6 +139,7 @@ export function createApp(db: AppDb) {
       const { items, rowsRead, flat } = await parseWorkbook(buf, id);
       const markups = getMarkups(db, id); // preservar markups existentes
       saveBoqContents(db, id, items, markups);
+      onMutate();
       return json(res, 200, { ok: true, rowsRead, flat, calc: calcBoq(db, id) });
     }
 
@@ -165,6 +169,7 @@ export function createApp(db: AppDb) {
         calc: calcBoq(db, id),
       });
       createSnapshot(db, snap);
+      onMutate();
       return json(res, 201, { snapshot: toSummary(snap) });
     }
 
@@ -203,6 +208,7 @@ export function createApp(db: AppDb) {
       if (body.detailLevel === "simple" || body.detailLevel === "detailed") {
         updateBoqDetailLevel(db, id, body.detailLevel);
       }
+      onMutate();
       return json(res, 200, { ok: true, calc: calcBoq(db, id) });
     }
 
@@ -218,8 +224,13 @@ export function createApp(db: AppDb) {
 const PORT = 8787;
 // Arranca solo al ejecutar directamente (tsx src/server.ts); no al importar en tests.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { db } = createDb("data.db");
+  const { db, sqlite } = createDb("data.db");
   // Datos demo solo cuando se pide explícitamente (BOQ_SEED=1) — nunca por accidente en producción.
   if (process.env.BOQ_SEED === "1") seedIfEmpty(db);
-  createApp(db).listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
+  // Respaldo automático del data.db tras cada guardado (F7): conserva los 3 más recientes en backups/.
+  const onMutate = () => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    backupDb(sqlite, "backups", stamp, 3).catch((e) => console.error("Respaldo falló:", e));
+  };
+  createApp(db, onMutate).listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
 }
