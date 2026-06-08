@@ -48,7 +48,7 @@ async function load() {
     render();
     setStatus("saved");
   } catch (e) {
-    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:#b00">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
+    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:var(--danger)">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
   }
 }
 
@@ -116,6 +116,9 @@ async function loadList() {
 async function switchBoq(id: string) {
   if (id === currentBoqId) return;
   if (dirty && !confirm("Hay cambios sin guardar. ¿Cambiar de presupuesto y descartarlos?")) return;
+  // Cambiar de presupuesto desde Comparar/Versiones aterriza en el editor del nuevo.
+  compareMode = false;
+  snapshotMode = false;
   currentBoqId = id;
   localStorage.setItem("boqId", id);
   await load();
@@ -216,10 +219,9 @@ let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
   dirty = s === "dirty";
   if (!statusEl) return;
-  const map = { saved: ["Guardado ✓", "#0f9d58"], dirty: ["Sin guardar", "#b8860b"], saving: ["Guardando…", "#6b7785"], error: ["Error al guardar", "#b00"] } as const;
-  const [txt, color] = map[s];
+  const txt = { saved: "Guardado ✓", dirty: "Sin guardar", saving: "Guardando…", error: "Error al guardar" }[s];
   statusEl.textContent = txt;
-  statusEl.style.color = color;
+  statusEl.className = `sub status status-${s}`; // color vía token semántico (UI-2/UI-5)
 }
 function markDirty() { setStatus("dirty"); }
 
@@ -362,9 +364,8 @@ function renderValidation() {
   const title = document.createElement("span");
   title.textContent = "Validación";
   const badge = document.createElement("span");
-  badge.className = "val-badge";
-  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.style.color = "#0f9d58"; }
-  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.style.color = errs > 0 ? "#d11" : "#b8860b"; }
+  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.className = "val-badge ok"; }
+  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.className = `val-badge ${errs > 0 ? "error" : "warn"}`; }
   head.append(title, badge);
   validationEl.appendChild(head);
 
@@ -423,7 +424,11 @@ function makeMarkupRow(m: MarkupRule): HTMLTableRowElement {
 
   const tdAmt = document.createElement("td"); tdAmt.className = "amount"; markupAmountCells.set(m.id, tdAmt); tr.appendChild(tdAmt);
 
-  const tdAct = td("actions"); tdAct.appendChild(button("×", () => removeMarkup(m.id), "icon del")); tr.appendChild(tdAct);
+  const tdAct = td("actions");
+  const delMk = button("×", () => removeMarkup(m.id), "icon del");
+  delMk.title = "Eliminar markup";
+  delMk.setAttribute("aria-label", "Eliminar markup");
+  tdAct.appendChild(delMk); tr.appendChild(tdAct);
   return tr;
 }
 
@@ -537,13 +542,7 @@ function makeBreakdownRow(it: BoqItem): HTMLTableRowElement {
 function renderCompare() {
   const app = document.getElementById("app")!;
   app.innerHTML = "";
-  const curName = boqList.find((b) => b.id === currentBoqId)?.projectName ?? "A";
-
-  const header = document.createElement("header");
-  const h1 = document.createElement("h1");
-  h1.textContent = `Comparar — ${curName}`;
-  header.append(h1, button("← Volver al editor", () => closeCompare()));
-  app.appendChild(header);
+  app.appendChild(buildHeader("compare"));
 
   const wrap = document.createElement("div");
   wrap.className = "wrap";
@@ -618,13 +617,7 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
 function renderVersiones() {
   const app = document.getElementById("app")!;
   app.innerHTML = "";
-  const curName = boqList.find((b) => b.id === currentBoqId)?.projectName ?? "";
-
-  const header = document.createElement("header");
-  const h1 = document.createElement("h1");
-  h1.textContent = `Versiones — ${curName}`;
-  header.append(h1, button("← Volver al editor", () => closeVersiones()));
-  app.appendChild(header);
+  app.appendChild(buildHeader("versiones"));
 
   const wrap = document.createElement("div");
   wrap.className = "wrap";
@@ -696,27 +689,7 @@ function render() {
   const app = document.getElementById("app")!;
   app.innerHTML = "";
 
-  const header = document.createElement("header");
-  const h1 = document.createElement("h1");
-  const cur = boqList.find((b) => b.id === currentBoqId);
-  h1.textContent = cur ? cur.projectName : boq.name;
-  // Selector de presupuesto (multi-proyecto, F1)
-  const sel = document.createElement("select");
-  sel.className = "boq-select";
-  for (const b of boqList) {
-    const o = document.createElement("option");
-    o.value = b.id;
-    o.textContent = `${b.projectName} — ${b.name} (${b.currency})`;
-    if (b.id === currentBoqId) o.selected = true;
-    sel.appendChild(o);
-  }
-  sel.addEventListener("change", () => switchBoq(sel.value));
-  const newBtn = button("+ Nuevo", () => newBudget(), "icon");
-  const status = document.createElement("span");
-  status.className = "sub"; status.id = "status"; status.style.marginLeft = "auto";
-  header.append(h1, sel, newBtn, status);
-  app.appendChild(header);
-  statusEl = status;
+  app.appendChild(buildHeader("editor"));
 
   const wrap = document.createElement("div");
   wrap.className = "wrap";
@@ -792,6 +765,8 @@ function render() {
       const chev = button(isOpen ? "▾" : "▸", () => toggleExpand(item.id), "chevron");
       if (hasBreakdown(item)) chev.classList.add("has-breakdown");
       chev.title = isOpen ? "Ocultar desglose" : "Desglosar precio";
+      chev.setAttribute("aria-label", isOpen ? "Ocultar desglose del precio" : "Desglosar precio unitario");
+      chev.setAttribute("aria-expanded", String(isOpen));
       descWrap.append(chev);
     }
     descWrap.append(makeCell(item, "description"));
@@ -808,8 +783,17 @@ function render() {
     const tdAmt = document.createElement("td"); tdAmt.className = "amount"; amountCells.set(item.id, tdAmt); tr.appendChild(tdAmt);
 
     const tdAct = document.createElement("td"); tdAct.className = "actions";
-    if (item.nodeType === "group") tdAct.appendChild(button("+ partida", () => addLine(item.id), "icon"));
-    tdAct.appendChild(button("×", () => removeItem(item.id), "icon del"));
+    if (item.nodeType === "group") {
+      const addBtn = button("+ partida", () => addLine(item.id), "icon");
+      addBtn.title = "Añadir partida a este capítulo";
+      addBtn.setAttribute("aria-label", "Añadir partida a este capítulo");
+      tdAct.appendChild(addBtn);
+    }
+    const noun = item.nodeType === "group" ? "capítulo" : "partida";
+    const delBtn = button("×", () => removeItem(item.id), "icon del");
+    delBtn.title = `Eliminar ${noun}`;
+    delBtn.setAttribute("aria-label", `Eliminar ${noun}`);
+    tdAct.appendChild(delBtn);
     tr.appendChild(tdAct);
 
     tbody.appendChild(tr);
@@ -832,7 +816,10 @@ function render() {
   mkHead.className = "panel-head";
   const mkTitle = document.createElement("span");
   mkTitle.textContent = "Markups (overhead, utilidad, ITBIS, contingencia…)";
-  mkHead.append(mkTitle, button("+ Markup", () => addMarkup(), "icon"));
+  const addMk = button("+ Markup", () => addMarkup(), "icon");
+  addMk.title = "Añadir un markup";
+  addMk.setAttribute("aria-label", "Añadir un markup");
+  mkHead.append(mkTitle, addMk);
   mkPanel.appendChild(mkHead);
   const mkTable = document.createElement("table");
   mkTable.innerHTML = `<thead><tr>
@@ -871,10 +858,65 @@ function render() {
 
 function button(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
   const b = document.createElement("button");
+  b.type = "button";
   b.textContent = label;
   if (cls) b.className = cls;
   b.addEventListener("click", onClick);
   return b;
+}
+
+// Header unificado entre vistas (UI-3): título del proyecto, selector de
+// presupuesto y estado de guardado se conservan en Editor, Comparar y Versiones.
+// `view` añade una miga (crumb) y, en sub-vistas, un botón de volver al editor.
+function buildHeader(view: "editor" | "compare" | "versiones"): HTMLElement {
+  const header = document.createElement("header");
+
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "title-wrap";
+  const h1 = document.createElement("h1");
+  const cur = boqList.find((b) => b.id === currentBoqId);
+  h1.textContent = cur ? cur.projectName : boq.name;
+  titleWrap.appendChild(h1);
+  if (view !== "editor") {
+    const crumb = document.createElement("span");
+    crumb.className = "crumb";
+    crumb.textContent = view === "compare" ? "Comparar" : "Versiones";
+    titleWrap.appendChild(crumb);
+  }
+
+  // Selector de presupuesto (multi-proyecto, F1) — presente en todas las vistas.
+  const sel = document.createElement("select");
+  sel.className = "boq-select";
+  sel.setAttribute("aria-label", "Cambiar de presupuesto");
+  sel.title = "Cambiar de presupuesto";
+  for (const b of boqList) {
+    const o = document.createElement("option");
+    o.value = b.id;
+    o.textContent = `${b.projectName} — ${b.name} (${b.currency})`;
+    if (b.id === currentBoqId) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", () => switchBoq(sel.value));
+
+  const newBtn = button("+ Nuevo", () => newBudget(), "icon");
+  newBtn.title = "Crear un presupuesto nuevo";
+  newBtn.setAttribute("aria-label", "Crear un presupuesto nuevo");
+
+  const status = document.createElement("span");
+  status.className = "sub status";
+  status.id = "status";
+  status.setAttribute("aria-live", "polite");
+
+  const right = document.createElement("div");
+  right.className = "header-right";
+  if (view === "compare") right.appendChild(button("← Volver al editor", () => closeCompare()));
+  if (view === "versiones") right.appendChild(button("← Volver al editor", () => closeVersiones()));
+  right.appendChild(status);
+
+  header.append(titleWrap, sel, newBtn, right);
+  statusEl = status;
+  setStatus(dirty ? "dirty" : "saved");
+  return header;
 }
 function td(cls = ""): HTMLTableCellElement {
   const c = document.createElement("td");
