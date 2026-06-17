@@ -67,6 +67,119 @@ async function save() {
   }
 }
 
+// ---- diálogo modal (reemplaza alert/confirm/prompt nativos) ----
+// API estilo HIG: un <dialog> nativo (atrapa el foco, Esc cierra) reutilizado.
+interface DialogField { name: string; label: string; value?: string; placeholder?: string; type?: string; }
+interface DialogOptions {
+  title: string;
+  message?: string;
+  fields?: DialogField[];
+  confirmLabel?: string;
+  cancelLabel?: string | null; // null => sin botón cancelar (modo alerta)
+  danger?: boolean;
+}
+
+let dialogEl: HTMLDialogElement | null = null;
+
+// Resuelve con los valores de los campos al confirmar, o null al cancelar/Esc/click fuera.
+export function showDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  if (!dialogEl) {
+    dialogEl = document.createElement("dialog");
+    dialogEl.className = "modal";
+    document.body.appendChild(dialogEl);
+  }
+  const dlg = dialogEl;
+  return new Promise((resolve) => {
+    const fields = opts.fields ?? [];
+    const form = document.createElement("form");
+    form.method = "dialog";
+
+    const h = document.createElement("h2");
+    h.className = "modal-title";
+    h.textContent = opts.title;
+    form.appendChild(h);
+
+    if (opts.message) {
+      const p = document.createElement("p");
+      p.className = "modal-msg";
+      p.textContent = opts.message;
+      form.appendChild(p);
+    }
+
+    const inputs: Record<string, HTMLInputElement> = {};
+    for (const f of fields) {
+      const wrap = document.createElement("label");
+      wrap.className = "modal-field";
+      const span = document.createElement("span");
+      span.textContent = f.label;
+      const inp = document.createElement("input");
+      inp.type = f.type ?? "text";
+      inp.value = f.value ?? "";
+      if (f.placeholder) inp.placeholder = f.placeholder;
+      wrap.append(span, inp);
+      form.appendChild(wrap);
+      inputs[f.name] = inp;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    if (opts.cancelLabel !== null) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = opts.cancelLabel ?? "Cancelar";
+      cancelBtn.addEventListener("click", () => settle(null));
+      actions.appendChild(cancelBtn);
+    }
+    const okBtn = document.createElement("button");
+    okBtn.type = "submit";
+    okBtn.className = "primary" + (opts.danger ? " danger" : "");
+    okBtn.textContent = opts.confirmLabel ?? "Aceptar";
+    actions.appendChild(okBtn);
+    form.appendChild(actions);
+
+    let settled = false;
+    function settle(result: Record<string, string> | null) {
+      if (settled) return;
+      settled = true;
+      dlg.removeEventListener("cancel", onCancel);
+      dlg.removeEventListener("click", onBackdrop);
+      dlg.close();
+      resolve(result);
+    }
+    const onCancel = (e: Event) => { e.preventDefault(); settle(null); }; // Esc
+    const onBackdrop = (e: MouseEvent) => { if (e.target === dlg) settle(null); };
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const out: Record<string, string> = {};
+      for (const f of fields) out[f.name] = inputs[f.name]!.value;
+      settle(out);
+    });
+    dlg.addEventListener("cancel", onCancel);
+    dlg.addEventListener("click", onBackdrop);
+
+    dlg.replaceChildren(form);
+    dlg.showModal();
+    const first = fields.length ? inputs[fields[0]!.name]! : okBtn;
+    first.focus();
+    if (first instanceof HTMLInputElement) first.select();
+  });
+}
+
+export const showAlert = (message: string, title = "Aviso"): Promise<void> =>
+  showDialog({ title, message, confirmLabel: "OK", cancelLabel: null }).then(() => {});
+
+export const showConfirm = (
+  message: string,
+  opts: { title?: string; confirmLabel?: string; danger?: boolean } = {},
+): Promise<boolean> =>
+  showDialog({ title: opts.title ?? "Confirmar", message, confirmLabel: opts.confirmLabel ?? "Continuar", danger: opts.danger })
+    .then((r) => r !== null);
+
+export const showPrompt = (label: string, def = "", title = label): Promise<string | null> =>
+  showDialog({ title, fields: [{ name: "value", label, value: def }], confirmLabel: "Aceptar" })
+    .then((r) => (r === null ? null : r.value ?? ""));
+
 async function exportExcel() {
   await save(); // exporta el estado persistido
   window.location.href = `/api/boq/${currentBoqId}/export`;
@@ -79,7 +192,7 @@ function importExcel() {
   input.addEventListener("change", async () => {
     const file = input.files?.[0];
     if (!file) return;
-    if (!confirm(`Importar "${file.name}" reemplazará las partidas actuales del presupuesto. ¿Continuar?`)) return;
+    if (!(await showConfirm(`Importar "${file.name}" reemplazará las partidas actuales del presupuesto. ¿Continuar?`, { title: "Importar Excel", confirmLabel: "Importar" }))) return;
     setStatus("saving");
     try {
       const buf = await file.arrayBuffer();
@@ -91,14 +204,15 @@ function importExcel() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       await load();
-      alert(
+      await showAlert(
         d.flat
           ? `Importadas ${d.rowsRead} filas sin jerarquía: todas quedaron en raíz. Si tu Excel tenía capítulos, revisa que las partidas usen indentación en la columna Descripción.`
           : `Importadas ${d.rowsRead} filas.`,
+        "Importación completa",
       );
     } catch (e) {
       setStatus("error");
-      alert(`Error al importar: ${e}`);
+      await showAlert(`Error al importar: ${e}`, "Error al importar");
     }
   });
   input.click();
@@ -115,16 +229,25 @@ async function loadList() {
 }
 async function switchBoq(id: string) {
   if (id === currentBoqId) return;
-  if (dirty && !confirm("Hay cambios sin guardar. ¿Cambiar de presupuesto y descartarlos?")) return;
+  if (dirty && !(await showConfirm("Hay cambios sin guardar. ¿Cambiar de presupuesto y descartarlos?", { title: "Cambios sin guardar", confirmLabel: "Descartar y cambiar", danger: true }))) return;
   currentBoqId = id;
   localStorage.setItem("boqId", id);
   await load();
 }
 async function newBudget() {
-  const projectName = prompt("Nombre del proyecto:", "Nuevo proyecto");
-  if (projectName == null) return;
-  const boqName = prompt("Nombre del presupuesto:", "Presupuesto base") ?? "Presupuesto base";
-  const currency = (prompt("Moneda (DOP / USD):", "DOP") ?? "DOP").toUpperCase();
+  const r0 = await showDialog({
+    title: "Nuevo presupuesto",
+    fields: [
+      { name: "projectName", label: "Nombre del proyecto", value: "Nuevo proyecto" },
+      { name: "boqName", label: "Nombre del presupuesto", value: "Presupuesto base" },
+      { name: "currency", label: "Moneda (DOP / USD)", value: "DOP" },
+    ],
+    confirmLabel: "Crear",
+  });
+  if (r0 == null) return;
+  const projectName = r0.projectName!.trim() || "Nuevo proyecto";
+  const boqName = r0.boqName!.trim() || "Presupuesto base";
+  const currency = (r0.currency!.trim() || "DOP").toUpperCase();
   const r = await fetch("/api/boqs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -155,7 +278,7 @@ let compareData: CompareData | null = null;
 
 async function openCompare() {
   const others = boqList.filter((b) => b.id !== currentBoqId);
-  if (others.length === 0) { alert("Necesitas al menos 2 presupuestos para comparar. Crea otro con '+ Nuevo'."); return; }
+  if (others.length === 0) { await showAlert("Necesitas al menos 2 presupuestos para comparar. Crea otro con '+ Nuevo'.", "Comparar"); return; }
   compareWithId = others.some((b) => b.id === compareWithId) ? compareWithId : others[0]!.id;
   compareMode = true;
   await loadCompare();
@@ -186,15 +309,15 @@ async function loadSnapshots() {
   render();
 }
 async function freezeSnapshot() {
-  const label = prompt("Etiqueta de la versión:", "Rev.0 aprobado");
+  const label = await showPrompt("Etiqueta de la versión", "Rev.0 aprobado", "Congelar versión");
   if (label == null) return;
-  if (dirty && !confirm("Hay cambios sin guardar. Se congelará el estado YA GUARDADO en la base, no los cambios pendientes. ¿Continuar?")) return;
+  if (dirty && !(await showConfirm("Hay cambios sin guardar. Se congelará el estado YA GUARDADO en la base, no los cambios pendientes. ¿Continuar?", { title: "Cambios sin guardar", confirmLabel: "Congelar lo guardado" }))) return;
   const r = await fetch(`/api/boq/${currentBoqId}/snapshots`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label }),
   });
-  if (!r.ok) { alert("No se pudo congelar la versión."); return; }
+  if (!r.ok) { await showAlert("No se pudo congelar la versión.", "Error"); return; }
   await loadSnapshots();
 }
 async function compareWithSnapshot(id: string) {

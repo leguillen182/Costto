@@ -23,7 +23,7 @@ src/
 web/
 └── main.ts         Editor keyboard-first (capa DOM; reusa calc.ts y tree.ts)
 ```
-**93 tests verdes** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
+**99 tests verdes** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
 
 ## Comandos
 ```

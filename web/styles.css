@@ -146,3 +146,28 @@ td.num .cellpad { text-align: right; font-variant-numeric: tabular-nums; }
 
 .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
 .hint kbd { background: #eef0f3; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font: 11px monospace; }
+
+/* Diálogo modal (reemplaza alert/confirm/prompt nativos) */
+dialog.modal {
+  border: 1px solid var(--line); border-radius: 12px; padding: 0;
+  width: min(420px, calc(100vw - 32px));
+  background: var(--panel); color: var(--ink);
+  box-shadow: 0 12px 40px rgba(15, 20, 30, .18);
+}
+dialog.modal::backdrop { background: rgba(15, 20, 30, .35); }
+dialog.modal form { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.modal-title { font-size: 16px; font-weight: 600; margin: 0; }
+.modal-msg { margin: 0; font-size: 14px; line-height: 1.45; color: var(--ink); }
+.modal-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.modal-field input {
+  font: inherit; color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+}
+.modal-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+button.primary.danger { background: var(--error); border-color: var(--error); }
+button.primary.danger:hover { color: #fff; }
+@media (prefers-reduced-motion: no-preference) {
+  dialog.modal[open] { animation: modal-in 150ms ease-out; }
+  @keyframes modal-in { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+}
