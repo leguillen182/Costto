@@ -184,6 +184,8 @@ td.num .cellpad { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .qto-item.sent { opacity: .6; }
 .qto-icon { font-size: 13px; }
+.qto-color { width: 32px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); cursor: pointer; }
+.qto-swatch { width: 12px; height: 12px; border-radius: 3px; flex: none; border: 1px solid rgba(0,0,0,.15); }
 .qto-label { flex: 1 1 100px; min-width: 80px; font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
 .qto-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .qto-qty { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink); white-space: nowrap; }

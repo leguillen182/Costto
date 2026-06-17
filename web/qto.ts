@@ -33,6 +33,7 @@ export interface Measurement {
   quantity: number; // ya escalada y redondeada
   unit: string;
   label: string;    // descripción editable para "nueva partida"
+  color: string;    // color del overlay (brocha activa al confirmar)
   sent?: boolean;    // ya volcada al presupuesto
 }
 
@@ -110,6 +111,7 @@ let tool: Tool | null = null;
 let draft: Pt[] = [];
 let cursor: Pt | null = null; // posición del ratón en espacio PDF (rubber-band)
 let realUnit = "m";           // unidad de trabajo para calibrar por segmento (m/cm/ft)
+let activeColor = "#2563eb";  // "brocha": color que reciben las mediciones nuevas
 
 // precisión / navegación
 const SNAP_PX = 12;           // tolerancia de snap en píxeles de pantalla
@@ -130,10 +132,8 @@ let scaleBadge: HTMLElement;
 let toolBtns: Partial<Record<Tool, HTMLButtonElement>> = {};
 let placeholder: HTMLElement;
 
-const ACCENT = "#2563eb";
-const AREA_FILL = "rgba(37,99,235,0.14)";
-const CAL = "#b87400";
-const COUNT = "#0f9d58";
+const CAL = "#b87400";   // ámbar — trazo de calibración
+const COUNT = "#0f9d58"; // verde — anillo de snap (contraste fijo)
 
 // ============================ entrada / salida de la vista ============================
 export function openQtoView(c: QtoContext): void {
@@ -145,6 +145,7 @@ export function openQtoView(c: QtoContext): void {
   measurements = [];
   tool = null; draft = []; cursor = null;
   realUnit = "m";
+  activeColor = "#2563eb";
   snapActive = false; spaceDown = false; panning = false; suppressClick = false;
   toolBtns = {};
   renderView();
@@ -233,9 +234,15 @@ function renderView(): void {
     unitSel.appendChild(o);
   }
   unitSel.addEventListener("change", () => { realUnit = unitSel.value; });
+  const colorLabel = document.createElement("span");
+  colorLabel.className = "rowbar-label"; colorLabel.textContent = "Color:";
+  const colorInput = document.createElement("input");
+  colorInput.type = "color"; colorInput.className = "qto-color"; colorInput.value = activeColor;
+  colorInput.title = "Color de las mediciones nuevas";
+  colorInput.addEventListener("input", () => { activeColor = colorInput.value; });
   scaleBadge = document.createElement("span");
   scaleBadge.className = "qto-scale";
-  bar2.append(tlabel, seg, newCountBtn, ratioBtn, unitLabel, unitSel, scaleBadge);
+  bar2.append(tlabel, seg, newCountBtn, ratioBtn, unitLabel, unitSel, colorLabel, colorInput, scaleBadge);
   wrap.appendChild(bar2);
 
   // Cuerpo: canvas + panel de mediciones
@@ -399,13 +406,13 @@ function redrawOverlay(): void {
   // mediciones confirmadas de la página actual
   for (const m of measurements) {
     if (m.page !== pageNum) continue;
-    if (m.kind === "count") drawMarkers(octx, m.points, COUNT);
-    else drawShape(octx, m.points, m.kind === "area", ACCENT);
+    if (m.kind === "count") drawMarkers(octx, m.points, m.color);
+    else drawShape(octx, m.points, m.kind === "area", m.color);
   }
   // borrador en curso
   if (draft.length) {
     const isArea = tool === "area";
-    const col = tool === "calibrar" ? CAL : ACCENT;
+    const col = tool === "calibrar" ? CAL : activeColor;
     const pts = cursor ? [...draft, cursor] : draft;
     drawShape(octx, pts, isArea, col, true);
   }
@@ -441,8 +448,10 @@ function drawShape(octx: any, pts: Pt[], close: boolean, color: string, dashed =
   }
   if (close && pts.length >= 3) {
     octx.closePath();
-    octx.fillStyle = AREA_FILL;
+    octx.fillStyle = color;
+    octx.globalAlpha = 0.14; // relleno translúcido del color elegido
     octx.fill();
+    octx.globalAlpha = 1;
   }
   octx.stroke();
   octx.setLineDash([]);
@@ -658,7 +667,7 @@ function addCountMarker(p: Pt): void {
   forceNewCount = false;
   if (!m) {
     const n = measurements.filter((x) => x.kind === "count").length + 1;
-    m = { id: crypto.randomUUID(), kind: "count", page: pageNum, points: [], quantity: 0, unit: defaultUnit("count"), label: `${autoLabel({ kind: "count" })} ${n}` };
+    m = { id: crypto.randomUUID(), kind: "count", page: pageNum, points: [], quantity: 0, unit: defaultUnit("count"), label: `${autoLabel({ kind: "count" })} ${n}`, color: activeColor };
     measurements.push(m);
   }
   m.points.push(p);
@@ -686,6 +695,7 @@ function finishDraft(): void {
       quantity: roundQ(kind, r.quantity),
       unit: r.unit,
       label: autoLabel({ kind }),
+      color: activeColor,
     });
     draft = []; cursor = null;
     redrawOverlay();
@@ -715,6 +725,10 @@ function renderList(): void {
   for (const m of measurements) {
     const row = document.createElement("div");
     row.className = "qto-item" + (m.sent ? " sent" : "");
+
+    const swatch = document.createElement("span");
+    swatch.className = "qto-swatch";
+    swatch.style.background = m.color;
 
     const icon = document.createElement("span");
     icon.className = "qto-icon";
@@ -769,7 +783,7 @@ function renderList(): void {
       renderList();
     }, "icon del");
 
-    row.append(icon, lbl, qty, sel, newBtn, selBtn, del);
+    row.append(swatch, icon, lbl, qty, sel, newBtn, selBtn, del);
     listEl.appendChild(row);
   }
 }

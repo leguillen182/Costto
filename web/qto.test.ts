@@ -43,7 +43,7 @@ function makeCtx(): QtoContext {
 
 const measurement = (over: Partial<Measurement> = {}): Measurement => ({
   id: "m1", kind: "length", page: 1, points: [{ x: 0, y: 0 }, { x: 200, y: 0 }],
-  quantity: 10, unit: "m", label: "Muro eje A", ...over,
+  quantity: 10, unit: "m", label: "Muro eje A", color: "#2563eb", ...over,
 });
 
 beforeEach(() => {
