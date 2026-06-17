@@ -356,6 +356,7 @@ function buildQtoContext(): QtoContext {
     backToEditor: () => render(),
     showAlert: (msg, title) => showAlert(msg, title),
     showConfirm: (msg, opts) => showConfirm(msg, opts),
+    showPrompt: (lbl, def, title) => showPrompt(lbl, def, title),
   };
 }
 function openQto() { openQtoView(buildQtoContext()); }

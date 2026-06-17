@@ -45,6 +45,14 @@ describe("qto — geometría", () => {
   it("polygonArea: 0 con menos de 3 puntos", () => {
     expect(polygonArea([p(0, 0), p(1, 1)])).toBe(0);
   });
+
+  it("polygonArea: puntos colineales → 0", () => {
+    expect(polygonArea([p(0, 0), p(1, 0), p(2, 0)])).toBe(0);
+  });
+
+  it("polylineLength: punto repetido aporta 0", () => {
+    expect(polylineLength([p(1, 1), p(1, 1)])).toBe(0);
+  });
 });
 
 describe("qto — calibración y escala", () => {
@@ -59,6 +67,7 @@ describe("qto — calibración y escala", () => {
   it("calibrationFactor: lanza si la longitud real no es > 0", () => {
     expect(() => calibrationFactor(p(0, 0), p(100, 0), 0)).toThrow();
     expect(() => calibrationFactor(p(0, 0), p(100, 0), -3)).toThrow();
+    expect(() => calibrationFactor(p(0, 0), p(100, 0), NaN)).toThrow();
   });
 
   it("applyLength: 200 × 0.05 = 10", () => {
@@ -93,6 +102,11 @@ describe("qto — deriveQuantity", () => {
   it("count: ignora la escala y cuenta marcas (unidad un)", () => {
     const r = deriveQuantity("count", null, { count: 7 });
     expect(r).toEqual({ kind: "count", quantity: 7, unit: "un" });
+  });
+
+  it("count: sin `count` usa el nº de puntos (fallback)", () => {
+    const r = deriveQuantity("count", null, { points: [p(0, 0), p(1, 0), p(2, 2)] });
+    expect(r).toEqual({ kind: "count", quantity: 3, unit: "un" });
   });
 
   it("length/area sin escala lanza", () => {

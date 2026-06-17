@@ -16,6 +16,7 @@ export interface QtoContext {
   backToEditor(): void;
   showAlert(msg: string, title?: string): Promise<void>;
   showConfirm(msg: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }): Promise<boolean>;
+  showPrompt(label: string, def?: string, title?: string): Promise<string | null>;
 }
 
 export type Tool = "calibrar" | "longitud" | "area" | "conteo";
@@ -76,7 +77,7 @@ export function sendMeasurementToSelected(
   return { ok: true };
 }
 
-function roundQ(kind: MeasureKind, q: number): number {
+export function roundQ(kind: MeasureKind, q: number): number {
   return kind === "count" ? Math.round(q) : Math.round(q * 100) / 100;
 }
 
@@ -91,6 +92,8 @@ let pdfDoc: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let pageObj: any = null;
 let viewport: Viewport | null = null;
+let currentRenderTask: { cancel(): void } | null = null; // render pdf.js en vuelo (cancelable)
+let forceNewCount = false; // fuerza un grupo de conteo nuevo en el próximo click
 
 let numPages = 0;
 let pageNum = 1;
@@ -135,6 +138,8 @@ export function openQtoView(c: QtoContext): void {
 function leave(): void {
   active = false;
   window.removeEventListener("keydown", onKeyDown);
+  if (currentRenderTask) { currentRenderTask.cancel(); currentRenderTask = null; }
+  if (pdfDoc) { try { pdfDoc.destroy(); } catch { /* no-op */ } pdfDoc = null; pageObj = null; }
   ctx?.backToEditor();
 }
 
@@ -198,9 +203,10 @@ function renderView(): void {
   toolBtns.area = btn("⬡ Área", () => setTool("area"));
   toolBtns.conteo = btn("📍 Conteo", () => setTool("conteo"));
   seg.append(toolBtns.calibrar, toolBtns.longitud, toolBtns.area, toolBtns.conteo);
+  const newCountBtn = btn("＋ grupo conteo", () => { forceNewCount = true; }, "icon");
   scaleBadge = document.createElement("span");
   scaleBadge.className = "qto-scale";
-  bar2.append(tlabel, seg, scaleBadge);
+  bar2.append(tlabel, seg, newCountBtn, scaleBadge);
   wrap.appendChild(bar2);
 
   // Cuerpo: canvas + panel de mediciones
@@ -241,7 +247,8 @@ function renderView(): void {
   hint.className = "hint";
   hint.innerHTML =
     "<kbd>Click</kbd> añade punto · <kbd>doble-click</kbd>/<kbd>Enter</kbd> cierra · " +
-    "<kbd>Esc</kbd> cancela · Calibra antes de medir longitudes/áreas.";
+    "<kbd>Esc</kbd> cancela · Calibra antes de medir longitudes/áreas · " +
+    "<kbd>＋ grupo conteo</kbd> para contar elementos por separado.";
   wrap.appendChild(hint);
 
   app.appendChild(wrap);
@@ -274,6 +281,7 @@ async function ensurePdfjs() {
 async function loadPdf(file: File): Promise<void> {
   try {
     const lib = await ensurePdfjs();
+    if (pdfDoc) { try { await pdfDoc.destroy(); } catch { /* no-op */ } pdfDoc = null; pageObj = null; }
     const data = await file.arrayBuffer();
     pdfDoc = await lib.getDocument({ data }).promise;
     numPages = pdfDoc.numPages;
@@ -290,7 +298,12 @@ async function loadPdf(file: File): Promise<void> {
 
 async function renderPage(): Promise<void> {
   if (!pdfDoc) return;
+  // Cancela cualquier render en vuelo (zoom/página rápidos no deben solapar render() sobre el canvas).
+  if (currentRenderTask) { currentRenderTask.cancel(); currentRenderTask = null; }
+
+  const prev = pageObj;
   pageObj = await pdfDoc.getPage(pageNum);
+  if (prev && prev !== pageObj) { try { prev.cleanup(); } catch { /* no-op */ } }
   const vp = pageObj.getViewport({ scale: zoom, rotation: ROTATION }) as Viewport;
   viewport = vp;
   const dpr = window.devicePixelRatio || 1;
@@ -305,11 +318,20 @@ async function renderPage(): Promise<void> {
   const cctx = pageCanvas.getContext("2d")!;
   cctx.setTransform(1, 0, 0, 1, 0, 0);
   cctx.clearRect(0, 0, pageCanvas.width, pageCanvas.height);
-  await pageObj.render({
+  const task = pageObj.render({
     canvasContext: cctx,
     viewport: vp,
     transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
-  }).promise;
+  });
+  currentRenderTask = task;
+  try {
+    await task.promise;
+  } catch (e) {
+    if ((e as { name?: string })?.name === "RenderingCancelledException") return; // esperado: lo relevará el render nuevo
+    throw e;
+  } finally {
+    if (currentRenderTask === task) currentRenderTask = null;
+  }
 
   redrawOverlay();
   refreshChrome();
@@ -419,6 +441,7 @@ function eventToPdf(e: MouseEvent): Pt {
 }
 
 function onClick(e: MouseEvent): void {
+  if (e.detail >= 2) return; // 2º click de un doble-click: lo cierra onDblClick (evita punto fantasma)
   if (!viewport || !tool) return;
   const p = eventToPdf(e);
   if (tool === "conteo") {
@@ -453,6 +476,7 @@ function onKeyDown(e: KeyboardEvent): void {
 function setTool(t: Tool): void {
   tool = tool === t ? null : t;
   draft = []; cursor = null;
+  if (t === "conteo") forceNewCount = true; // (re)entrar a Conteo inicia un grupo nuevo
   refreshChrome();
   redrawOverlay();
 }
@@ -473,19 +497,21 @@ async function finishCalibration(): Promise<void> {
   redrawOverlay();
 }
 
-// Pequeño prompt numérico reutilizando el <dialog> del editor vía ctx no está disponible aquí
-// (ctx no expone showPrompt); usamos un prompt mínimo propio basado en window para el MVP.
+// Prompt numérico vía el <dialog> estilado del editor (ctx.showPrompt), no el window.prompt nativo.
 async function promptLength(): Promise<number | null> {
-  const raw = window.prompt("Longitud real del segmento de calibración (m):", "5");
+  const raw = await ctx!.showPrompt("Longitud real del segmento (m):", "5", "Calibrar escala");
   if (raw == null) return null;
   const v = parseFloat(raw.replace(",", "."));
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
 function addCountMarker(p: Pt): void {
-  let m = measurements.find((x) => x.kind === "count" && x.page === pageNum && !x.sent);
+  // forceNewCount → empieza un grupo de conteo nuevo (permite contar p.ej. ventanas y puertas aparte).
+  let m = forceNewCount ? undefined : measurements.find((x) => x.kind === "count" && x.page === pageNum && !x.sent);
+  forceNewCount = false;
   if (!m) {
-    m = { id: crypto.randomUUID(), kind: "count", page: pageNum, points: [], quantity: 0, unit: defaultUnit("count"), label: autoLabel({ kind: "count" }) };
+    const n = measurements.filter((x) => x.kind === "count").length + 1;
+    m = { id: crypto.randomUUID(), kind: "count", page: pageNum, points: [], quantity: 0, unit: defaultUnit("count"), label: `${autoLabel({ kind: "count" })} ${n}` };
     measurements.push(m);
   }
   m.points.push(p);
@@ -497,7 +523,10 @@ function addCountMarker(p: Pt): void {
 function finishDraft(): void {
   if (!tool || tool === "conteo" || tool === "calibrar") return;
   const min = tool === "area" ? 3 : 2;
-  if (draft.length < min) { return; }
+  if (draft.length < min) {
+    ctx?.showAlert(`Necesitas al menos ${min} puntos para ${tool === "area" ? "un área" : "una longitud"}.`, "Medir");
+    return;
+  }
   const kind: MeasureKind = tool === "area" ? "area" : "length";
   const scale = scaleByPage.get(pageNum) ?? null;
   try {

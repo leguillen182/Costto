@@ -7,6 +7,7 @@ import {
   sendMeasurementAsNewLine,
   sendMeasurementToSelected,
   autoLabel,
+  roundQ,
   type QtoContext,
   type Measurement,
 } from "./qto.js";
@@ -36,6 +37,7 @@ function makeCtx(): QtoContext {
     backToEditor: () => {},
     showAlert: async () => {},
     showConfirm: async () => true,
+    showPrompt: async () => null,
   };
 }
 
@@ -80,6 +82,26 @@ describe("QTO — nueva partida", () => {
     const cId = sendMeasurementAsNewLine(ctx, measurement({ kind: "count", unit: "un", quantity: 7 }), null);
     expect(items.find((i) => i.id === aId)!.unit).toBe("m²");
     expect(items.find((i) => i.id === cId)!.quantity).toBe(7);
+  });
+
+  it("inserta en raíz (parentId null) cuando no se elige capítulo", () => {
+    const ctx = makeCtx();
+    const id = sendMeasurementAsNewLine(ctx, measurement(), null);
+    expect(items.find((i) => i.id === id)!.parentId).toBeNull();
+  });
+});
+
+describe("QTO — helpers", () => {
+  it("autoLabel por tipo", () => {
+    expect(autoLabel({ kind: "length" })).toBe("Longitud");
+    expect(autoLabel({ kind: "area" })).toBe("Área");
+    expect(autoLabel({ kind: "count" })).toBe("Conteo");
+  });
+
+  it("roundQ: conteo→entero, longitud/área→2 decimales", () => {
+    expect(roundQ("count", 3.7)).toBe(4);
+    expect(roundQ("length", 3.456)).toBe(3.46);
+    expect(roundQ("area", 12.005)).toBeCloseTo(12.01, 5);
   });
 });
 
