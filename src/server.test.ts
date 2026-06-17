@@ -86,4 +86,25 @@ describe("server — endpoints HTTP", () => {
     const r = await fetch(`${base}/api/boq/b1/compare-snapshot?snapshot=noexiste`);
     expect(r.status).toBe(404);
   });
+
+  it("PUT persiste builtArea y GET lo devuelve (F4)", async () => {
+    const put = await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [], markups: [], builtArea: 850 }),
+    });
+    expect(put.status).toBe(200);
+    const get = await fetch(`${base}/api/boq/b1`);
+    expect((await get.json()).boq.builtArea).toBe(850);
+  });
+
+  it("PUT con builtArea 0 o negativa la normaliza a null (F4)", async () => {
+    await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [], markups: [], builtArea: 0 }),
+    });
+    const get = await fetch(`${base}/api/boq/b1`);
+    expect((await get.json()).boq.builtArea).toBeNull();
+  });
 });

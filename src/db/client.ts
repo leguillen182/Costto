@@ -34,6 +34,7 @@ function migrate(sqlite: Database.Database): void {
       currency TEXT NOT NULL,
       rounding_decimals INTEGER NOT NULL DEFAULT 2,
       detail_level TEXT NOT NULL DEFAULT 'simple',
+      built_area REAL,
       classification_system TEXT,
       metadata TEXT
     );
@@ -90,6 +91,7 @@ function migrate(sqlite: Database.Database): void {
   // Migración aditiva para data.db existentes (CREATE TABLE IF NOT EXISTS no altera tablas previas).
   addColumnIfMissing(sqlite, "boq_items", "rate_other", "REAL");
   addColumnIfMissing(sqlite, "boqs", "detail_level", "TEXT NOT NULL DEFAULT 'simple'");
+  addColumnIfMissing(sqlite, "boqs", "built_area", "REAL");
 }
 
 function addColumnIfMissing(sqlite: Database.Database, table: string, column: string, decl: string): void {

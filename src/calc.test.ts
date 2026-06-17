@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { recalculate, componentSum } from "./calc.js";
+import { recalculate, componentSum, costPerArea } from "./calc.js";
 import type { Boq, BoqItem, MarkupRule } from "./types.js";
 
 // ---- Helpers de construcción ----
@@ -225,5 +225,30 @@ describe("componentSum", () => {
   });
   it("devuelve 0 si hay un componente explícito en 0", () => {
     expect(componentSum(line({ id: "a", rateLabor: 0 }))).toBe(0);
+  });
+});
+
+describe("costPerArea (F4)", () => {
+  // subtotal 1000; markup 10% running → total 1100.
+  const items = [line({ id: "a", quantity: 100, unitRate: 10 })];
+  const mk: MarkupRule[] = [{ id: "m", boqId: "b1", name: "OH", type: "percentage", value: 10, basis: "running", sortOrder: 1 }];
+  const result = recalculate(boq(), items, mk);
+
+  it("calcula costo directo y total por m²", () => {
+    const cpa = costPerArea(result, 50);
+    expect(cpa).toEqual({ area: 50, directPerM2: 20, totalPerM2: 22 });
+  });
+
+  it("redondea a los decimales indicados", () => {
+    // 1000 / 3 = 333.333…  → 333.33 ; 1100 / 3 = 366.666… → 366.67
+    const cpa = costPerArea(result, 3, 2);
+    expect(cpa).toEqual({ area: 3, directPerM2: 333.33, totalPerM2: 366.67 });
+  });
+
+  it("null si el área falta, es 0 o negativa", () => {
+    expect(costPerArea(result, null)).toBeNull();
+    expect(costPerArea(result, undefined)).toBeNull();
+    expect(costPerArea(result, 0)).toBeNull();
+    expect(costPerArea(result, -10)).toBeNull();
   });
 });

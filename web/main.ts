@@ -1,6 +1,6 @@
 // Editor de BOQ — keyboard-first (Tarea 1.3 + persistencia).
 // Reusa el motor de cálculo puro (../src/calc). Carga/guarda vía API (/api) → SQLite.
-import { recalculate, componentSum } from "../src/calc";
+import { recalculate, componentSum, costPerArea } from "../src/calc";
 import { validate } from "../src/validate";
 import * as tree from "../src/tree";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
@@ -58,7 +58,7 @@ async function save() {
     const r = await fetch(`/api/boq/${currentBoqId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, markups, detailLevel: boq.detailLevel ?? "simple" }),
+      body: JSON.stringify({ items, markups, detailLevel: boq.detailLevel ?? "simple", builtArea: boq.builtArea ?? null }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     setStatus("saved");
@@ -459,6 +459,7 @@ function removeItem(id: string) {
 const amountCells = new Map<string, HTMLElement>();
 const markupAmountCells = new Map<string, HTMLElement>();
 let subtotalEl: HTMLElement, totalEl: HTMLElement, validationEl: HTMLElement;
+let m2DirectEl: HTMLElement | null = null, m2TotalEl: HTMLElement | null = null;
 
 function recompute() {
   const r = recalculate(boq, items, markups);
@@ -469,6 +470,9 @@ function recompute() {
     if (el) el.textContent = fmt(mr.amount);
   }
   totalEl.textContent = fmt(r.total);
+  const cpa = costPerArea(r, boq.builtArea, boq.roundingDecimals ?? 2);
+  if (m2DirectEl) m2DirectEl.textContent = cpa ? `${fmt(cpa.directPerM2)}/m²` : "—";
+  if (m2TotalEl) m2TotalEl.textContent = cpa ? `${fmt(cpa.totalPerM2)}/m²` : "—";
   renderValidation();
 }
 
@@ -972,8 +976,24 @@ function render() {
   totals.className = "totals";
   totals.innerHTML = `
     <div class="row sub"><span>Subtotal</span><span class="v" id="t-sub"></span></div>
-    <div class="row total"><span>Total (con markups)</span><span class="v" id="t-total"></span></div>`;
+    <div class="row total"><span>Total (con markups)</span><span class="v" id="t-total"></span></div>
+    <div class="row area">
+      <label for="t-area">Área construida</label>
+      <span class="v"><input id="t-area" class="area-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="—"> m²</span>
+    </div>
+    <div class="row m2"><span>Costo directo / m²</span><span class="v" id="t-m2-direct"></span></div>
+    <div class="row m2"><span>Costo / m² (con markups)</span><span class="v" id="t-m2-total"></span></div>`;
   wrap.appendChild(totals);
+  const areaInput = totals.querySelector<HTMLInputElement>("#t-area")!;
+  if (boq.builtArea != null && boq.builtArea > 0) areaInput.value = String(boq.builtArea);
+  areaInput.addEventListener("input", () => {
+    const v = parseFloat(areaInput.value);
+    boq.builtArea = Number.isFinite(v) && v > 0 ? v : null;
+    markDirty();
+    recompute();
+  });
+  m2DirectEl = totals.querySelector("#t-m2-direct");
+  m2TotalEl = totals.querySelector("#t-m2-total");
 
   // Panel de validación
   validationEl = document.createElement("div");

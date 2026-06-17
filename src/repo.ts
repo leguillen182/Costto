@@ -75,6 +75,7 @@ function rowToBoq(r: typeof boqs.$inferSelect): Boq {
     currency: r.currency,
     roundingDecimals: r.roundingDecimals,
     detailLevel: (r.detailLevel ?? "simple") as Boq["detailLevel"],
+    builtArea: r.builtArea ?? null,
     classificationSystem: r.classificationSystem ?? undefined,
     metadata: r.metadata ? JSON.parse(r.metadata) : undefined,
   };
@@ -117,6 +118,7 @@ export function createBoq(db: AppDb, b: Boq): void {
       currency: b.currency,
       roundingDecimals: b.roundingDecimals,
       detailLevel: b.detailLevel ?? "simple",
+      builtArea: b.builtArea ?? null,
       classificationSystem: b.classificationSystem ?? null,
       metadata: b.metadata ? JSON.stringify(b.metadata) : null,
     })
@@ -125,6 +127,11 @@ export function createBoq(db: AppDb, b: Boq): void {
 
 export function updateBoqDetailLevel(db: AppDb, boqId: string, level: "simple" | "detailed"): void {
   db.update(boqs).set({ detailLevel: level }).where(eq(boqs.id, boqId)).run();
+}
+
+/** Actualiza el área construida (m²) del BOQ (F4). null = borrar. */
+export function updateBoqBuiltArea(db: AppDb, boqId: string, area: number | null): void {
+  db.update(boqs).set({ builtArea: area }).where(eq(boqs.id, boqId)).run();
 }
 
 export function insertItems(db: AppDb, items: BoqItem[]): void {

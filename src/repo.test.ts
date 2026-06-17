@@ -15,6 +15,7 @@ import {
   listSnapshots,
   getSnapshot,
   saveBoqContents,
+  updateBoqBuiltArea,
 } from "./repo.js";
 import { buildSnapshot } from "./snapshot.js";
 import type { BoqItem, MarkupRule } from "./types.js";
@@ -95,6 +96,19 @@ describe("repo — persistencia y round-trip", () => {
 
   it("calcBoq lanza error si el BOQ no existe", () => {
     expect(() => calcBoq(db, "noexiste")).toThrow();
+  });
+
+  it("persiste y actualiza el área construida (F4)", () => {
+    createBoq(db, { id: "ba", projectId: "p1", name: "Con área", kind: "owner_budget", currency: "DOP", roundingDecimals: 2, builtArea: 500 });
+    expect(getBoq(db, "ba")?.builtArea).toBe(500);
+    updateBoqBuiltArea(db, "ba", 750.5);
+    expect(getBoq(db, "ba")?.builtArea).toBe(750.5);
+    updateBoqBuiltArea(db, "ba", null);
+    expect(getBoq(db, "ba")?.builtArea).toBeNull();
+  });
+
+  it("área construida por defecto es null", () => {
+    expect(getBoq(db, "b1")?.builtArea).toBeNull();
   });
 
   it("aísla BOQs distintos del mismo proyecto", () => {

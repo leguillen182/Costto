@@ -39,6 +39,7 @@ export interface Boq {
   currency: string;
   roundingDecimals: number; // ADR-011: default 2
   detailLevel?: DetailLevel; // default "simple"
+  builtArea?: number | null; // m² construidos (F4) — base del costo/m²; null = sin definir
   classificationSystem?: string;
   metadata?: Record<string, unknown>;
 }

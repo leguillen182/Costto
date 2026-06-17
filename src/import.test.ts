@@ -48,6 +48,26 @@ describe("import — round-trip export→import", () => {
     expect(reparsed.subtotal).toBe(calc.subtotal); // 120000
   });
 
+  it("incluye el costo/m² en el export cuando hay área (F4) y el import lo ignora", async () => {
+    const boqArea: Boq = { ...boq, builtArea: 100 }; // subtotal 120000 → 1200/m² directo; total 120000 → 1200/m²
+    const calc = recalculate(boqArea, items);
+    const wb = await buildWorkbook(boqArea, items, calc);
+    const buf = Buffer.from(await wb.xlsx.writeBuffer());
+
+    // El workbook contiene las filas de costo/m²
+    const rb = new ExcelJS.Workbook();
+    await rb.xlsx.load(buf as unknown as ExcelJS.Buffer);
+    const labels: string[] = [];
+    rb.getWorksheet(1)!.eachRow((row) => labels.push(String(row.getCell(5).value ?? ""))); // col E = "unitRate"/etiquetas de totales
+    expect(labels).toContain("Área construida (m²)");
+    expect(labels).toContain("Costo / m² (con markups)");
+
+    // Y el import las descarta (no se vuelven partidas)
+    const { items: parsed } = await parseWorkbook(buf, "b1");
+    expect(parsed.some((p) => /m²|área|costo/i.test(p.description))).toBe(false);
+    expect(parsed).toHaveLength(5);
+  });
+
   it("ignora filas de totales/markups (Subtotal, ITBIS, TOTAL)", async () => {
     const calc = recalculate(boq, items, [{ id: "m", boqId: "b1", name: "ITBIS", type: "percentage", value: 18, basis: "running", sortOrder: 1 }]);
     const wb = await buildWorkbook(boq, items, calc);

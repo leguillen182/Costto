@@ -94,3 +94,21 @@ export function recalculate(
 
   return { amounts, subtotal, markups: markupResults, total: running };
 }
+
+/** Costo por m² construido (F4). Derivación pura sobre un resultado ya calculado.
+ *  - directPerM2 = subtotal / área (costo directo de obra, sin markups)
+ *  - totalPerM2  = total / área    (con markups)
+ *  Devuelve null si no hay área válida (> 0). */
+export interface CostPerArea { area: number; directPerM2: number; totalPerM2: number; }
+export function costPerArea(
+  result: BoqCalcResult,
+  area: number | null | undefined,
+  decimals = 2,
+): CostPerArea | null {
+  if (area == null || !(area > 0)) return null;
+  return {
+    area,
+    directPerM2: round(result.subtotal / area, decimals),
+    totalPerM2: round(result.total / area, decimals),
+  };
+}

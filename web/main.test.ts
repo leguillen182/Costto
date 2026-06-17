@@ -16,7 +16,9 @@ const markups = [{ id: "m", boqId: "b1", name: "ITBIS", type: "percentage", valu
 function mockFetch(input: RequestInfo | URL, opts?: RequestInit) {
   const path = new URL(String(input), "http://localhost").pathname;
   const method = opts?.method ?? "GET";
-  const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: async () => body } as Response);
+  // Clona la respuesta: los fixtures son objetos compartidos a nivel de módulo y el
+  // editor muta los ítems al editar; sin clonar, un test contaminaría al siguiente.
+  const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: async () => structuredClone(body) } as Response);
   if (path === "/api/boqs") return ok({ boqs: [{ id: "b1", name: "Presupuesto base", kind: boq.kind, currency: boq.currency, projectId: "p1", projectName: "Torre A" }] });
   if (path === "/api/boq/b1/snapshots") return ok({ snapshots: [] });
   if (path === "/api/boq/b1" && method === "PUT") return ok({ ok: true, calc: {} });
@@ -95,6 +97,24 @@ describe("editor — atajos de teclado", () => {
     const l1Row = [...document.querySelectorAll<HTMLElement>("tbody tr[data-id]")].find((tr) => tr.dataset.id === "l1")!;
     expect(l1Row.querySelector("[data-col=quantity]")).toBeNull(); // ya es grupo
     expect(cell("l2", "code")).toBeTruthy(); // l2 sigue presente (reparentada)
+  });
+});
+
+describe("editor — costo/m² (F4)", () => {
+  it("sin área definida muestra '—'", async () => {
+    await boot();
+    expect(document.querySelector("#t-m2-total")?.textContent).toBe("—");
+    expect(document.querySelector("#t-m2-direct")?.textContent).toBe("—");
+  });
+
+  it("al ingresar el área calcula el costo/m² en vivo", async () => {
+    await boot();
+    // subtotal 120,000 ; ITBIS 18% running → total 141,600. Área 100 → 1,416/m² (total), 1,200/m² (directo).
+    const area = document.querySelector<HTMLInputElement>("#t-area")!;
+    area.value = "100";
+    area.dispatchEvent(new Event("input"));
+    expect(document.querySelector("#t-m2-total")?.textContent).toContain("1,416");
+    expect(document.querySelector("#t-m2-direct")?.textContent).toContain("1,200");
   });
 });
 

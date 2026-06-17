@@ -20,6 +20,7 @@ export const boqs = sqliteTable("boqs", {
   currency: text("currency").notNull(),
   roundingDecimals: integer("rounding_decimals").notNull().default(2),
   detailLevel: text("detail_level").notNull().default("simple"),
+  builtArea: real("built_area"), // m² construidos (F4)
   classificationSystem: text("classification_system"),
   metadata: text("metadata"),
 });
