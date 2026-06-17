@@ -1,0 +1,113 @@
+import { describe, it, expect } from "vitest";
+import {
+  segmentLength,
+  polylineLength,
+  polygonArea,
+  calibrationFactor,
+  applyLength,
+  applyArea,
+  deriveQuantity,
+  defaultUnit,
+  type Pt,
+  type PageScale,
+} from "./qto.js";
+
+const p = (x: number, y: number): Pt => ({ x, y });
+
+describe("qto — geometría", () => {
+  it("segmentLength: triángulo 3-4-5", () => {
+    expect(segmentLength(p(0, 0), p(3, 4))).toBe(5);
+  });
+
+  it("polylineLength: suma de segmentos", () => {
+    expect(polylineLength([p(0, 0), p(3, 0), p(3, 4)])).toBe(7); // 3 + 4
+  });
+
+  it("polylineLength: 0 con menos de 2 puntos", () => {
+    expect(polylineLength([])).toBe(0);
+    expect(polylineLength([p(1, 1)])).toBe(0);
+  });
+
+  it("polygonArea: cuadrado unidad = 1", () => {
+    expect(polygonArea([p(0, 0), p(1, 0), p(1, 1), p(0, 1)])).toBe(1);
+  });
+
+  it("polygonArea: triángulo base 4 altura 3 = 6", () => {
+    expect(polygonArea([p(0, 0), p(4, 0), p(0, 3)])).toBe(6);
+  });
+
+  it("polygonArea: el sentido de giro no cambia el valor (abs)", () => {
+    const cw = [p(0, 0), p(0, 1), p(1, 1), p(1, 0)];
+    const ccw = [p(0, 0), p(1, 0), p(1, 1), p(0, 1)];
+    expect(polygonArea(cw)).toBe(polygonArea(ccw));
+  });
+
+  it("polygonArea: 0 con menos de 3 puntos", () => {
+    expect(polygonArea([p(0, 0), p(1, 1)])).toBe(0);
+  });
+});
+
+describe("qto — calibración y escala", () => {
+  it("calibrationFactor: 200 px-PDF = 10 m → 0.05", () => {
+    expect(calibrationFactor(p(0, 0), p(200, 0), 10)).toBeCloseTo(0.05, 12);
+  });
+
+  it("calibrationFactor: lanza si el segmento tiene longitud 0", () => {
+    expect(() => calibrationFactor(p(5, 5), p(5, 5), 10)).toThrow();
+  });
+
+  it("calibrationFactor: lanza si la longitud real no es > 0", () => {
+    expect(() => calibrationFactor(p(0, 0), p(100, 0), 0)).toThrow();
+    expect(() => calibrationFactor(p(0, 0), p(100, 0), -3)).toThrow();
+  });
+
+  it("applyLength: 200 × 0.05 = 10", () => {
+    const scale: PageScale = { unitsPerPdf: 0.05, realUnit: "m" };
+    expect(applyLength(200, scale)).toBeCloseTo(10, 12);
+  });
+
+  it("applyArea escala con factor² (no con factor)", () => {
+    const scale: PageScale = { unitsPerPdf: 0.05, realUnit: "m" };
+    // 400 unidades-PDF² × 0.05² = 400 × 0.0025 = 1.0  (con factor sería 20 → guarda contra ese bug)
+    expect(applyArea(400, scale)).toBeCloseTo(1.0, 12);
+    expect(applyArea(400, scale)).not.toBeCloseTo(20, 6);
+  });
+});
+
+describe("qto — deriveQuantity", () => {
+  const scale: PageScale = { unitsPerPdf: 0.05, realUnit: "m" };
+
+  it("length: usa la polilínea × factor y unidad m", () => {
+    const r = deriveQuantity("length", scale, { points: [p(0, 0), p(200, 0)] });
+    expect(r).toEqual({ kind: "length", quantity: 10, unit: "m" });
+  });
+
+  it("area: usa el polígono × factor² y unidad m²", () => {
+    const r = deriveQuantity("area", scale, { points: [p(0, 0), p(20, 0), p(20, 20), p(0, 20)] });
+    // área-PDF = 400; × 0.0025 = 1.0
+    expect(r.kind).toBe("area");
+    expect(r.unit).toBe("m²");
+    expect(r.quantity).toBeCloseTo(1.0, 12);
+  });
+
+  it("count: ignora la escala y cuenta marcas (unidad un)", () => {
+    const r = deriveQuantity("count", null, { count: 7 });
+    expect(r).toEqual({ kind: "count", quantity: 7, unit: "un" });
+  });
+
+  it("length/area sin escala lanza", () => {
+    expect(() => deriveQuantity("length", null, { points: [p(0, 0), p(1, 0)] })).toThrow();
+    expect(() => deriveQuantity("area", null, { points: [p(0, 0), p(1, 0), p(1, 1)] })).toThrow();
+  });
+
+  it("unitOverride fuerza la unidad", () => {
+    const r = deriveQuantity("length", scale, { points: [p(0, 0), p(200, 0)] }, "ml");
+    expect(r.unit).toBe("ml");
+  });
+
+  it("defaultUnit por tipo", () => {
+    expect(defaultUnit("length")).toBe("m");
+    expect(defaultUnit("area")).toBe("m²");
+    expect(defaultUnit("count")).toBe("un");
+  });
+});

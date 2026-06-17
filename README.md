@@ -4,7 +4,7 @@ Módulo BOQ (Fase 1, estimador) de OwnerRep-ERP. **Código fuera de Google Drive
 workspace: node_modules + sync de Drive es problemático).
 
 - **Docs / planificación:** `…/0 Claude/tools/OwnerRep-ERP/` (en Drive) + gestión viva en Obsidian `Proyectos/OwnerRep-ERP/`.
-- **Stack:** TypeScript + Node · SQLite + Drizzle (better-sqlite3) · Vite (editor web) · ExcelJS · Vitest.
+- **Stack:** TypeScript + Node · SQLite + Drizzle (better-sqlite3) · Vite (editor web) · ExcelJS · pdf.js (QTO) · Vitest.
 
 ## Estructura
 ```
@@ -14,6 +14,7 @@ src/
 ├── validate.ts     Reglas de validación duras (A1)
 ├── compare.ts      compareBoqs() — comparar 2 presupuestos (B2)
 ├── snapshot.ts     Versiones/snapshots: congelar Rev.0 + comparar vs vivo (F3)
+├── qto.ts          Geometría + escala para QTO (longitud/área/calibración, puro)
 ├── tree.ts         Operaciones de árbol del editor (indent/outdent/move/… puras)
 ├── import.ts       Import desde Excel (B1) · export.ts  Export a Excel
 ├── backup.ts       Backup automático del data.db (F7)
@@ -21,9 +22,10 @@ src/
 ├── server.ts       Backend HTTP (createApp) — REST sobre el repo
 └── db/{schema,client}.ts   Schema Drizzle + conexión/migración
 web/
-└── main.ts         Editor keyboard-first (capa DOM; reusa calc.ts y tree.ts)
+├── main.ts         Editor keyboard-first (capa DOM; reusa calc.ts y tree.ts)
+└── qto.ts          Vista QTO: visor PDF (pdf.js) + medición sobre el plano → partidas
 ```
-**109 tests verdes** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
+**133 tests verdes** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
 
 ## Comandos
 ```
@@ -43,6 +45,8 @@ Fase 1 (estimador) — **Hito 5 "apto para uso real" cerrado**. Hecho:
 - Validación (A1) · multi-proyecto en la UI (F1) · comparar 2 presupuestos (B2).
 - Versiones/snapshots: congelar "Rev.0 aprobado" + comparar vivo vs Rev.0 (F3).
 - Costo por m² construido (F4): área en el BOQ + costo directo y total /m² (UI + Excel).
+- QTO sobre planos PDF (MVP): visor pdf.js + calibrar escala + medir longitud/área/conteo → partidas
+  (nueva o rellenar la seleccionada). Solo sesión; las cantidades se persisten como partidas. Fase 2: IFC vía web-ifc.
 - Backup automático del `data.db` en cada guardado, 3 rotando (F7).
 - Tests del editor (C2): lógica de árbol extraída a `tree.ts` + tests jsdom del front.
 - Refinamiento UI estilo Apple HIG: foco visible, diálogo modal `<dialog>` (sin alert/confirm/prompt), tokens de color, a11y.

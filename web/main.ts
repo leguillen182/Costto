@@ -3,6 +3,7 @@
 import { recalculate, componentSum, costPerArea } from "../src/calc";
 import { validate } from "../src/validate";
 import * as tree from "../src/tree";
+import { openQtoView, type QtoContext } from "./qto.js";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
 
 const uid = () => crypto.randomUUID();
@@ -328,6 +329,36 @@ async function compareWithSnapshot(id: string) {
 }
 function backToSnapshotList() { snapshotCompareId = ""; render(); }
 function closeVersiones() { snapshotMode = false; render(); }
+
+// ---- QTO sobre planos PDF (medición → partidas) ----
+// La vista vive en web/qto.ts; aquí solo construimos el puente al estado del editor.
+function buildQtoContext(): QtoContext {
+  return {
+    getSelectedId: () => selectedId,
+    getGroups: () =>
+      tree.ordered(items)
+        .map((o) => o.item)
+        .filter((it) => it.nodeType === "group")
+        .map((g) => ({ id: g.id, label: `${g.code?.trim() ? g.code.trim() + " · " : ""}${g.description?.trim() || "(sin nombre)"}` })),
+    addLineUnder: (parentId, fields) => {
+      const id = uid();
+      items = tree.addLine(items, boq.id, parentId, id);
+      const it = items.find((i) => i.id === id);
+      if (it) Object.assign(it, fields);
+      return id;
+    },
+    updateLine: (id, patch) => {
+      const it = items.find((i) => i.id === id);
+      if (it) Object.assign(it, patch);
+    },
+    isLine: (id) => items.find((i) => i.id === id)?.nodeType === "line",
+    markDirty: () => markDirty(),
+    backToEditor: () => render(),
+    showAlert: (msg, title) => showAlert(msg, title),
+    showConfirm: (msg, opts) => showConfirm(msg, opts),
+  };
+}
+function openQto() { openQtoView(buildQtoContext()); }
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -858,6 +889,7 @@ function render() {
     button("⬆ Importar", () => importExcel()),
     button("⇄ Comparar", () => openCompare()),
     button("🔖 Versiones", () => openVersiones()),
+    button("📐 QTO", () => openQto()),
   );
   wrap.appendChild(toolbar);
 

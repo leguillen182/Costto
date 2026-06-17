@@ -156,6 +156,39 @@ td.num .cellpad { text-align: right; font-variant-numeric: tabular-nums; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 14px; }
 .hint kbd { background: #eef0f3; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font: 11px monospace; }
 
+/* QTO — medición sobre planos PDF */
+.qto-wrap { max-width: 1280px; }
+.qto-scale { font-size: 12px; color: var(--warn); margin-left: auto; }
+.qto-scale.ok { color: var(--ok); }
+.qto-main { display: flex; gap: 14px; align-items: flex-start; margin-top: 4px; }
+.qto-canvas-wrap {
+  position: relative; flex: 1; overflow: auto; max-height: 72vh;
+  border: 1px solid var(--line); border-radius: 8px; background: #eef0f3;
+}
+.qto-page { display: block; }
+.qto-overlay { position: absolute; top: 0; left: 0; cursor: crosshair; }
+.qto-placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 14px; padding: 40px; text-align: center;
+}
+.qto-side {
+  width: 320px; flex: none; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+}
+.qto-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 64vh; overflow: auto; }
+.qto-empty { color: var(--muted); font-size: 12px; padding: 8px 2px; }
+.qto-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px;
+  border: 1px solid var(--line); border-radius: 7px; flex-wrap: wrap;
+}
+.qto-item.sent { opacity: .6; }
+.qto-icon { font-size: 13px; }
+.qto-label { flex: 1 1 100px; min-width: 80px; font: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.qto-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.qto-qty { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink); white-space: nowrap; }
+.qto-group { font: inherit; font-size: 12px; border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px; max-width: 120px; }
+.qto-group:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Diálogo modal (reemplaza alert/confirm/prompt nativos) */
 dialog.modal {
   border: 1px solid var(--line); border-radius: 12px; padding: 0;
