@@ -164,6 +164,7 @@ td.num .cellpad { text-align: right; font-variant-numeric: tabular-nums; }
 .qto-canvas-wrap {
   position: relative; flex: 1; overflow: auto; max-height: 72vh;
   border: 1px solid var(--line); border-radius: 8px; background: #eef0f3;
+  user-select: none; overscroll-behavior: contain;
 }
 .qto-page { display: block; }
 .qto-overlay { position: absolute; top: 0; left: 0; cursor: crosshair; }

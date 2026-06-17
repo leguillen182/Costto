@@ -8,6 +8,10 @@ import {
   applyArea,
   deriveQuantity,
   defaultUnit,
+  orthoConstrain,
+  nearestPointIndex,
+  scaleRatioToFactor,
+  PDF_UNIT_M,
   type Pt,
   type PageScale,
 } from "./qto.js";
@@ -123,5 +127,47 @@ describe("qto — deriveQuantity", () => {
     expect(defaultUnit("length")).toBe("m");
     expect(defaultUnit("area")).toBe("m²");
     expect(defaultUnit("count")).toBe("un");
+  });
+
+  it("la unidad de length/area sale de la calibración (realUnit)", () => {
+    const cm: PageScale = { unitsPerPdf: 0.02, realUnit: "cm" };
+    expect(deriveQuantity("length", cm, { points: [p(0, 0), p(100, 0)] }).unit).toBe("cm");
+    expect(deriveQuantity("area", cm, { points: [p(0, 0), p(10, 0), p(10, 10), p(0, 10)] }).unit).toBe("cm²");
+  });
+});
+
+describe("qto — ayudas de dibujo (snap/orto)", () => {
+  it("orthoConstrain: |dx|≥|dy| → horizontal (fija y)", () => {
+    expect(orthoConstrain(p(0, 0), p(5, 2))).toEqual({ x: 5, y: 0 });
+  });
+  it("orthoConstrain: |dy|>|dx| → vertical (fija x)", () => {
+    expect(orthoConstrain(p(0, 0), p(2, 5))).toEqual({ x: 0, y: 5 });
+  });
+  it("orthoConstrain: empate → horizontal", () => {
+    expect(orthoConstrain(p(1, 1), p(4, 4))).toEqual({ x: 4, y: 1 });
+  });
+
+  it("nearestPointIndex: devuelve el más cercano dentro de la tolerancia", () => {
+    const cands = [p(0, 0), p(10, 0), p(3, 4)];
+    expect(nearestPointIndex(p(3.5, 4.2), cands, 1)).toBe(2);
+  });
+  it("nearestPointIndex: −1 si ninguno entra en la tolerancia", () => {
+    expect(nearestPointIndex(p(5, 5), [p(0, 0), p(10, 0)], 1)).toBe(-1);
+  });
+  it("nearestPointIndex: lista vacía → −1", () => {
+    expect(nearestPointIndex(p(0, 0), [], 10)).toBe(-1);
+  });
+});
+
+describe("qto — escala escrita 1:n", () => {
+  it("scaleRatioToFactor: 1:50 y 1:100 (métrico, 1u=1/72\")", () => {
+    expect(scaleRatioToFactor(50)).toBeCloseTo(50 * PDF_UNIT_M, 12);
+    expect(scaleRatioToFactor(50)).toBeCloseTo(0.0176389, 6);
+    expect(scaleRatioToFactor(100)).toBeCloseTo(0.0352778, 6);
+  });
+  it("scaleRatioToFactor: lanza si n no es > 0", () => {
+    expect(() => scaleRatioToFactor(0)).toThrow();
+    expect(() => scaleRatioToFactor(-5)).toThrow();
+    expect(() => scaleRatioToFactor(NaN)).toThrow();
   });
 });

@@ -86,15 +86,48 @@ export function deriveQuantity(
   geom: { points?: Pt[]; count?: number },
   unitOverride?: string,
 ): QtoResult {
-  const unit = unitOverride ?? defaultUnit(kind);
   if (kind === "count") {
-    return { kind, quantity: geom.count ?? (geom.points?.length ?? 0), unit };
+    return { kind, quantity: geom.count ?? (geom.points?.length ?? 0), unit: unitOverride ?? defaultUnit("count") };
   }
   if (!scale) throw new Error("Falta calibrar la escala de la página para medir longitudes/áreas.");
   const pts = geom.points ?? [];
+  // La unidad sale de la calibración: longitud → realUnit; área → realUnit².
+  const unit = unitOverride ?? (kind === "length" ? scale.realUnit : `${scale.realUnit}²`);
   const quantity =
     kind === "length"
       ? applyLength(polylineLength(pts), scale)
       : applyArea(polygonArea(pts), scale);
   return { kind, quantity, unit };
+}
+
+// ---- ayudas de dibujo (puras; usadas por la capa de navegador para snap/orto) ----
+
+/** Restringe `p` a un segmento horizontal o vertical respecto a `prev`
+ *  (orto-lock): si |dx| ≥ |dy| → horizontal (fija y); si no → vertical (fija x). */
+export function orthoConstrain(prev: Pt, p: Pt): Pt {
+  return Math.abs(p.x - prev.x) >= Math.abs(p.y - prev.y)
+    ? { x: p.x, y: prev.y }
+    : { x: prev.x, y: p.y };
+}
+
+/** Índice del candidato más cercano a `target` dentro de `maxDist` (o −1 si ninguno).
+ *  Pensado para usarse en espacio PANTALLA (tolerancia en px constante con el zoom). */
+export function nearestPointIndex(target: Pt, candidates: Pt[], maxDist: number): number {
+  let best = -1;
+  let bestD = maxDist;
+  for (let i = 0; i < candidates.length; i++) {
+    const d = segmentLength(target, candidates[i]!);
+    if (d <= bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/** 1 unidad PDF = 1/72" ; en metros. */
+export const PDF_UNIT_M = 0.0254 / 72;
+
+/** Factor de escala a partir de una escala escrita 1:n (asume export a escala real, métrico).
+ *  `unitsPerPdf (m) = n × (0.0254/72)`. Lanza si n no es > 0. */
+export function scaleRatioToFactor(denominator: number): number {
+  if (!(denominator > 0)) throw new Error("La escala 1:n debe tener n > 0.");
+  return denominator * PDF_UNIT_M;
 }

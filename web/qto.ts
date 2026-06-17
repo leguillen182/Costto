@@ -3,7 +3,11 @@
 // render del PDF, overlay de medición, eventos y el volcado de cantidades a partidas.
 // pdfjs se importa de forma LAZY (dentro de loadPdf) para que el módulo cargue limpio en jsdom.
 import type { BoqItem } from "../src/types.js";
-import { deriveQuantity, calibrationFactor, defaultUnit, type Pt, type PageScale, type MeasureKind } from "../src/qto.js";
+import {
+  deriveQuantity, calibrationFactor, defaultUnit,
+  orthoConstrain, nearestPointIndex, scaleRatioToFactor,
+  type Pt, type PageScale, type MeasureKind,
+} from "../src/qto.js";
 
 // ---- contrato de integración con el editor (lo construye main.ts cerrando sobre sus vars) ----
 export interface QtoContext {
@@ -105,8 +109,18 @@ let measurements: Measurement[] = [];
 let tool: Tool | null = null;
 let draft: Pt[] = [];
 let cursor: Pt | null = null; // posición del ratón en espacio PDF (rubber-band)
+let realUnit = "m";           // unidad de trabajo para calibrar por segmento (m/cm/ft)
+
+// precisión / navegación
+const SNAP_PX = 12;           // tolerancia de snap en píxeles de pantalla
+let snapActive = false;       // el cursor está enganchado a un vértice
+let spaceDown = false;        // barra espaciadora → modo pan
+let panning = false;
+let panX = 0, panY = 0;
+let suppressClick = false;    // tras un pan, ignora el click siguiente (no añade punto)
 
 // refs de DOM
+let canvasWrap: HTMLDivElement;
 let pageCanvas: HTMLCanvasElement;
 let overlayCanvas: HTMLCanvasElement;
 let listEl: HTMLElement;
@@ -130,14 +144,18 @@ export function openQtoView(c: QtoContext): void {
   scaleByPage.clear();
   measurements = [];
   tool = null; draft = []; cursor = null;
+  realUnit = "m";
+  snapActive = false; spaceDown = false; panning = false; suppressClick = false;
   toolBtns = {};
   renderView();
   window.addEventListener("keydown", onKeyDown);
+  window.addEventListener("keyup", onKeyUp);
 }
 
 function leave(): void {
   active = false;
   window.removeEventListener("keydown", onKeyDown);
+  window.removeEventListener("keyup", onKeyUp);
   if (currentRenderTask) { currentRenderTask.cancel(); currentRenderTask = null; }
   if (pdfDoc) { try { pdfDoc.destroy(); } catch { /* no-op */ } pdfDoc = null; pageObj = null; }
   ctx?.backToEditor();
@@ -204,17 +222,29 @@ function renderView(): void {
   toolBtns.conteo = btn("📍 Conteo", () => setTool("conteo"));
   seg.append(toolBtns.calibrar, toolBtns.longitud, toolBtns.area, toolBtns.conteo);
   const newCountBtn = btn("＋ grupo conteo", () => { forceNewCount = true; }, "icon");
+  const ratioBtn = btn("Escala 1:n", () => calibrateByRatio(), "icon");
+  const unitLabel = document.createElement("span");
+  unitLabel.className = "rowbar-label"; unitLabel.textContent = "Unidad:";
+  const unitSel = document.createElement("select");
+  unitSel.className = "qto-group";
+  for (const u of ["m", "cm", "ft"]) {
+    const o = document.createElement("option");
+    o.value = u; o.textContent = u; if (u === realUnit) o.selected = true;
+    unitSel.appendChild(o);
+  }
+  unitSel.addEventListener("change", () => { realUnit = unitSel.value; });
   scaleBadge = document.createElement("span");
   scaleBadge.className = "qto-scale";
-  bar2.append(tlabel, seg, newCountBtn, scaleBadge);
+  bar2.append(tlabel, seg, newCountBtn, ratioBtn, unitLabel, unitSel, scaleBadge);
   wrap.appendChild(bar2);
 
   // Cuerpo: canvas + panel de mediciones
   const main = document.createElement("div");
   main.className = "qto-main";
 
-  const canvasWrap = document.createElement("div");
+  canvasWrap = document.createElement("div");
   canvasWrap.className = "qto-canvas-wrap";
+  canvasWrap.addEventListener("wheel", onWheel, { passive: false });
   pageCanvas = document.createElement("canvas");
   pageCanvas.className = "qto-page";
   overlayCanvas = document.createElement("canvas");
@@ -222,6 +252,7 @@ function renderView(): void {
   overlayCanvas.addEventListener("click", onClick);
   overlayCanvas.addEventListener("mousemove", onMove);
   overlayCanvas.addEventListener("dblclick", onDblClick);
+  overlayCanvas.addEventListener("mousedown", onMouseDown);
   placeholder = document.createElement("div");
   placeholder.className = "qto-placeholder";
   placeholder.textContent = "Carga un PDF vectorial para empezar a medir.";
@@ -247,8 +278,9 @@ function renderView(): void {
   hint.className = "hint";
   hint.innerHTML =
     "<kbd>Click</kbd> añade punto · <kbd>doble-click</kbd>/<kbd>Enter</kbd> cierra · " +
-    "<kbd>Esc</kbd> cancela · Calibra antes de medir longitudes/áreas · " +
-    "<kbd>＋ grupo conteo</kbd> para contar elementos por separado.";
+    "<kbd>Esc</kbd> cancela · <kbd>Backspace</kbd> deshace punto · <kbd>Shift</kbd> orto (H/V) · " +
+    "imán a vértices cercanos · <kbd>rueda</kbd> zoom · <kbd>Espacio</kbd>+arrastrar (o botón central) mueve · " +
+    "Escala 1:n es aproximada (asume export a escala real).";
   wrap.appendChild(hint);
 
   app.appendChild(wrap);
@@ -373,9 +405,19 @@ function redrawOverlay(): void {
   // borrador en curso
   if (draft.length) {
     const isArea = tool === "area";
-    const col = tool === "calibrar" ? CAL : isArea ? ACCENT : ACCENT;
+    const col = tool === "calibrar" ? CAL : ACCENT;
     const pts = cursor ? [...draft, cursor] : draft;
     drawShape(octx, pts, isArea, col, true);
+  }
+  // anillo de snap (cursor enganchado a un vértice)
+  if (snapActive && cursor) {
+    const [sx, sy] = toVp(cursor);
+    octx.beginPath();
+    octx.arc(sx, sy, 6, 0, Math.PI * 2);
+    octx.strokeStyle = COUNT;
+    octx.lineWidth = 2;
+    octx.setLineDash([]);
+    octx.stroke();
   }
 }
 
@@ -440,14 +482,42 @@ function eventToPdf(e: MouseEvent): Pt {
   return { x: x!, y: y! };
 }
 
+/** Vértices a los que se puede enganchar (mediciones de la página + borrador actual). */
+function candidateVertices(): Pt[] {
+  const out: Pt[] = [];
+  for (const m of measurements) if (m.page === pageNum) out.push(...m.points);
+  out.push(...draft);
+  return out;
+}
+
+/** Aplica orto-lock (Shift, relativo al último punto) o snapping a vértice cercano (en px de pantalla). */
+function applySnapAndOrtho(raw: Pt, e: MouseEvent): Pt {
+  snapActive = false;
+  const prev = draft[draft.length - 1];
+  if (e.shiftKey && prev) return orthoConstrain(prev, raw);
+  if (!viewport) return raw;
+  const cands = candidateVertices();
+  if (!cands.length) return raw;
+  const t = viewport.convertToViewportPoint(raw.x, raw.y);
+  const candVp = cands.map((c) => {
+    const v = viewport!.convertToViewportPoint(c.x, c.y);
+    return { x: v[0]!, y: v[1]! };
+  });
+  const idx = nearestPointIndex({ x: t[0]!, y: t[1]! }, candVp, SNAP_PX);
+  if (idx >= 0) { snapActive = true; return cands[idx]!; }
+  return raw;
+}
+
 function onClick(e: MouseEvent): void {
   if (e.detail >= 2) return; // 2º click de un doble-click: lo cierra onDblClick (evita punto fantasma)
-  if (!viewport || !tool) return;
-  const p = eventToPdf(e);
+  if (suppressClick) { suppressClick = false; return; } // click residual tras un pan
+  if (!viewport || !tool || spaceDown) return;
+  const raw = eventToPdf(e);
   if (tool === "conteo") {
-    addCountMarker(p);
+    addCountMarker(raw); // el conteo no engancha
     return;
   }
+  const p = applySnapAndOrtho(raw, e);
   draft.push(p);
   if (tool === "calibrar" && draft.length === 2) {
     finishCalibration();
@@ -457,8 +527,9 @@ function onClick(e: MouseEvent): void {
 }
 
 function onMove(e: MouseEvent): void {
+  if (panning) return; // el pan se mueve por listeners de window
   if (!viewport || !tool || tool === "conteo" || !draft.length) return;
-  cursor = eventToPdf(e);
+  cursor = applySnapAndOrtho(eventToPdf(e), e);
   redrawOverlay();
 }
 
@@ -469,13 +540,74 @@ function onDblClick(e: MouseEvent): void {
 
 function onKeyDown(e: KeyboardEvent): void {
   if (!active) return;
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return; // no robar teclas al editar
+  if (e.key === " " || e.code === "Space") {
+    e.preventDefault(); // evita el scroll de la página
+    spaceDown = true;
+    if (!panning) overlayCanvas.style.cursor = "grab";
+    return;
+  }
   if (e.key === "Enter") { e.preventDefault(); finishDraft(); }
-  else if (e.key === "Escape") { draft = []; cursor = null; redrawOverlay(); }
+  else if (e.key === "Escape") { draft = []; cursor = null; snapActive = false; redrawOverlay(); }
+  else if (e.key === "Backspace") {
+    if (draft.length) { e.preventDefault(); draft.pop(); redrawOverlay(); }
+  }
+}
+
+function onKeyUp(e: KeyboardEvent): void {
+  if (e.key === " " || e.code === "Space") {
+    spaceDown = false;
+    if (!panning) overlayCanvas.style.cursor = "";
+  }
+}
+
+// ---- pan (barra espaciadora + arrastrar, o botón central) ----
+function onMouseDown(e: MouseEvent): void {
+  if (e.button === 1 || (spaceDown && e.button === 0)) {
+    e.preventDefault();
+    panning = true;
+    panX = e.clientX; panY = e.clientY;
+    overlayCanvas.style.cursor = "grabbing";
+    window.addEventListener("mousemove", onPanMove);
+    window.addEventListener("mouseup", onPanUp);
+  }
+}
+function onPanMove(e: MouseEvent): void {
+  const dx = e.clientX - panX, dy = e.clientY - panY;
+  panX = e.clientX; panY = e.clientY;
+  canvasWrap.scrollLeft -= dx;
+  canvasWrap.scrollTop -= dy;
+}
+function onPanUp(): void {
+  panning = false;
+  suppressClick = true; // no añadir punto al soltar el pan
+  overlayCanvas.style.cursor = spaceDown ? "grab" : "";
+  window.removeEventListener("mousemove", onPanMove);
+  window.removeEventListener("mouseup", onPanUp);
+}
+
+// ---- zoom con rueda centrado en el cursor ----
+function onWheel(e: WheelEvent): void {
+  if (!pdfDoc || !viewport) return;
+  e.preventDefault();
+  zoomAtClient(e.deltaY < 0 ? 1.25 : 1 / 1.25, e.clientX, e.clientY);
+}
+async function zoomAtClient(factor: number, clientX: number, clientY: number): Promise<void> {
+  if (!viewport) return;
+  const orect = overlayCanvas.getBoundingClientRect();
+  const [px, py] = viewport.convertToPdfPoint(clientX - orect.left, clientY - orect.top);
+  await setZoom(zoom * factor);
+  if (!viewport) return;
+  const [vx, vy] = viewport.convertToViewportPoint(px!, py!); // css-px del mismo punto tras re-render
+  const wrect = canvasWrap.getBoundingClientRect();
+  canvasWrap.scrollLeft = vx! - (clientX - wrect.left); // mantener el punto bajo el cursor
+  canvasWrap.scrollTop = vy! - (clientY - wrect.top);
 }
 
 function setTool(t: Tool): void {
   tool = tool === t ? null : t;
-  draft = []; cursor = null;
+  draft = []; cursor = null; snapActive = false;
   if (t === "conteo") forceNewCount = true; // (re)entrar a Conteo inicia un grupo nuevo
   refreshChrome();
   redrawOverlay();
@@ -488,7 +620,7 @@ async function finishCalibration(): Promise<void> {
   if (ans == null) { redrawOverlay(); return; }
   try {
     const unitsPerPdf = calibrationFactor(a, b, ans);
-    scaleByPage.set(pageNum, { unitsPerPdf, realUnit: "m" });
+    scaleByPage.set(pageNum, { unitsPerPdf, realUnit });
     tool = "longitud";
   } catch (err) {
     await ctx?.showAlert(`Calibración inválida: ${err}`, "Calibrar");
@@ -499,10 +631,25 @@ async function finishCalibration(): Promise<void> {
 
 // Prompt numérico vía el <dialog> estilado del editor (ctx.showPrompt), no el window.prompt nativo.
 async function promptLength(): Promise<number | null> {
-  const raw = await ctx!.showPrompt("Longitud real del segmento (m):", "5", "Calibrar escala");
+  const raw = await ctx!.showPrompt(`Longitud real del segmento (${realUnit}):`, "5", "Calibrar escala");
   if (raw == null) return null;
   const v = parseFloat(raw.replace(",", "."));
   return Number.isFinite(v) && v > 0 ? v : null;
+}
+
+// Calibración por escala escrita 1:n (métrica). Caveat: asume export a escala real del plano.
+async function calibrateByRatio(): Promise<void> {
+  const raw = await ctx!.showPrompt("Escala del plano 1:", "50", "Calibrar por escala");
+  if (raw == null) return;
+  const n = parseFloat(raw.replace(",", "."));
+  try {
+    scaleByPage.set(pageNum, { unitsPerPdf: scaleRatioToFactor(n), realUnit: "m" });
+  } catch (err) {
+    await ctx!.showAlert(`Escala inválida: ${err}`, "Calibrar");
+    return;
+  }
+  refreshChrome();
+  redrawOverlay();
 }
 
 function addCountMarker(p: Pt): void {
@@ -637,7 +784,7 @@ function refreshChrome(): void {
   if (scaleBadge) {
     const s = scaleByPage.get(pageNum);
     scaleBadge.textContent = s
-      ? `escala pág: calibrada ✓`
+      ? `escala pág: calibrada ✓ (${s.realUnit})`
       : "sin calibrar ⚠ (calibra para longitudes/áreas)";
     scaleBadge.classList.toggle("ok", !!s);
   }
