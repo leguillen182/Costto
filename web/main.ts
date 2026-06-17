@@ -48,7 +48,7 @@ async function load() {
     render();
     setStatus("saved");
   } catch (e) {
-    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:#b00">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
+    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:var(--error)">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
   }
 }
 
@@ -216,10 +216,9 @@ let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
   dirty = s === "dirty";
   if (!statusEl) return;
-  const map = { saved: ["Guardado ✓", "#0f9d58"], dirty: ["Sin guardar", "#b8860b"], saving: ["Guardando…", "#6b7785"], error: ["Error al guardar", "#b00"] } as const;
-  const [txt, color] = map[s];
-  statusEl.textContent = txt;
-  statusEl.style.color = color;
+  const labels = { saved: "Guardado ✓", dirty: "Sin guardar", saving: "Guardando…", error: "Error al guardar" } as const;
+  statusEl.textContent = labels[s];
+  statusEl.dataset.status = s;
 }
 function markDirty() { setStatus("dirty"); }
 
@@ -363,8 +362,8 @@ function renderValidation() {
   title.textContent = "Validación";
   const badge = document.createElement("span");
   badge.className = "val-badge";
-  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.style.color = "#0f9d58"; }
-  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.style.color = errs > 0 ? "#d11" : "#b8860b"; }
+  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.style.color = "var(--ok)"; }
+  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.style.color = errs > 0 ? "var(--error)" : "var(--warn)"; }
   head.append(title, badge);
   validationEl.appendChild(head);
 
@@ -376,7 +375,8 @@ function renderValidation() {
       const row = document.createElement("div");
       row.className = `val-item ${is.severity}`;
       const ref = it ? (it.code?.trim() || it.description?.trim() || "—") : "";
-      row.innerHTML = `<span class="dot"></span><span class="msg">${is.message}</span><span class="ref">${ref}</span>`;
+      const sev = is.severity === "error" ? "Error" : "Aviso";
+      row.innerHTML = `<span class="dot" aria-hidden="true"></span><span class="sr-only">${sev}:</span><span class="msg">${is.message}</span><span class="ref">${ref}</span>`;
       if (is.itemId) {
         row.addEventListener("click", () => { selectRow(is.itemId!); focusCell(is.itemId!, "description"); });
       }
