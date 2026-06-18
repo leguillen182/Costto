@@ -492,6 +492,7 @@ const amountCells = new Map<string, HTMLElement>();
 const markupAmountCells = new Map<string, HTMLElement>();
 let subtotalEl: HTMLElement, totalEl: HTMLElement, validationEl: HTMLElement;
 let m2DirectEl: HTMLElement | null = null, m2TotalEl: HTMLElement | null = null;
+let summaryEl: HTMLElement | null = null;
 
 function recompute() {
   const r = recalculate(boq, items, markups);
@@ -505,7 +506,37 @@ function recompute() {
   const cpa = costPerArea(r, boq.builtArea, boq.roundingDecimals ?? 2);
   if (m2DirectEl) m2DirectEl.textContent = cpa ? `${fmt(cpa.directPerM2)}/m²` : "—";
   if (m2TotalEl) m2TotalEl.textContent = cpa ? `${fmt(cpa.totalPerM2)}/m²` : "—";
+  renderSummary(r.amounts);
   renderValidation();
+}
+
+// §04 — Resumen por capítulo con barras de proporción (sobre el subtotal de capítulos).
+function renderSummary(amounts: Record<string, number>) {
+  if (!summaryEl) return;
+  summaryEl.innerHTML = "";
+  const chapters = ordered()
+    .filter((o) => o.depth === 0 && o.item.nodeType === "group")
+    .map((o) => ({ item: o.item, amount: amounts[o.item.id] ?? 0 }));
+  if (chapters.length === 0) {
+    const e = document.createElement("div"); e.className = "summary-empty";
+    e.textContent = "Añade un capítulo para ver el desglose por proporción.";
+    summaryEl.appendChild(e);
+    return;
+  }
+  const denom = chapters.reduce((s, c) => s + Math.max(0, c.amount), 0) || 1;
+  for (const c of chapters) {
+    const pct = Math.max(0, (c.amount / denom) * 100);
+    const row = document.createElement("div");
+    row.className = "summary-row";
+    const code = document.createElement("span"); code.className = "s-code"; code.textContent = c.item.code ?? "";
+    const name = document.createElement("span"); name.className = "s-name"; name.textContent = c.item.description || "—";
+    const bar = document.createElement("span"); bar.className = "s-bar";
+    const fill = document.createElement("i"); fill.style.width = `${pct.toFixed(1)}%`; bar.appendChild(fill);
+    const pctEl = document.createElement("span"); pctEl.className = "s-pct"; pctEl.textContent = `${Math.round(pct)}%`;
+    const amt = document.createElement("span"); amt.className = "s-amt"; amt.textContent = fmt(c.amount);
+    row.append(code, name, bar, pctEl, amt);
+    summaryEl.appendChild(row);
+  }
 }
 
 function renderValidation() {
@@ -742,6 +773,7 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
 
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr>
+    <th style="width:28px" aria-label="Estado"></th>
     <th style="width:90px">Código</th><th>Descripción</th>
     <th class="num" style="width:150px">${L.a}</th><th class="num" style="width:150px">${L.b}</th>
     <th class="num" style="width:170px">Δ (${L.b} − ${L.a})</th>
@@ -750,10 +782,16 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
   for (const r of d.rows) {
     const tr = document.createElement("tr");
     const dpos = (r.deltaAmount ?? 0) > 0, dneg = (r.deltaAmount ?? 0) < 0;
-    const tag = r.side === "onlyA" ? ` <span class="badge a">${L.badgeA}</span>` : r.side === "onlyB" ? ` <span class="badge b">${L.badgeB}</span>` : "";
+    // §05: símbolo primero (el ojo escanea símbolo antes que color); color como refuerzo.
+    const changed = r.side === "both" && (r.deltaAmount ?? 0) !== 0;
+    const sym = r.side === "onlyB" ? "+" : r.side === "onlyA" ? "−" : changed ? "~" : "·";
+    const symCls = r.side === "onlyB" ? "add" : r.side === "onlyA" ? "remove" : changed ? "mod" : "same";
+    const rowCls = r.side === "onlyB" ? "row-add" : r.side === "onlyA" ? "row-remove" : changed ? "row-mod" : "";
+    if (rowCls) tr.className = rowCls;
     tr.innerHTML = `
+      <td class="diff-sym ${symCls}">${sym}</td>
       <td class="code"><div class="cellpad">${r.code ?? ""}</div></td>
-      <td><div class="cellpad">${r.description}${tag}</div></td>
+      <td><div class="cellpad">${r.description}</div></td>
       <td class="num"><div class="cellpad">${fA(r.amountA)}</div></td>
       <td class="num"><div class="cellpad">${fA(r.amountB)}</div></td>
       <td class="num ${dpos ? "delta-up" : dneg ? "delta-down" : ""}"><div class="cellpad">${fmtDelta(r.deltaAmount, r.deltaPct)}</div></td>`;
@@ -873,7 +911,10 @@ function render() {
   const newBtn = button("+ Nuevo", () => newBudget(), "icon");
   const status = document.createElement("span");
   status.className = "sub"; status.id = "status"; status.style.marginLeft = "auto";
-  header.append(h1, sel, newBtn, status);
+  const themeBtn = button(currentTheme() === "light" ? "🌙" : "☀", () => toggleTheme(), "theme-toggle");
+  themeBtn.title = "Cambiar tema claro / oscuro";
+  themeBtn.setAttribute("aria-label", "Cambiar tema claro u oscuro");
+  header.append(h1, sel, newBtn, status, themeBtn);
   app.appendChild(header);
   statusEl = status;
 
@@ -1005,6 +1046,11 @@ function render() {
   mkPanel.appendChild(mkTable);
   wrap.appendChild(mkPanel);
 
+  // §04 — Resumen por capítulo (barras de proporción). Se llena en recompute().
+  summaryEl = document.createElement("div");
+  summaryEl.className = "summary";
+  wrap.appendChild(summaryEl);
+
   const totals = document.createElement("div");
   totals.className = "totals";
   totals.innerHTML = `
@@ -1045,6 +1091,16 @@ function render() {
   setStatus(dirty ? "dirty" : "saved");
 }
 
+// ---- Tema claro/oscuro (default dark; preferencia en localStorage) ----
+function currentTheme(): "dark" | "light" {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("costto-theme", next); } catch { /* sin localStorage: solo sesión */ }
+  render();
+}
 function button(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
   const b = document.createElement("button");
   b.textContent = label;
