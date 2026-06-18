@@ -79,6 +79,8 @@ tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button.seg-active { background: var(--accent); color: #fff; }
 .seg button.seg-active:hover { color: #fff; }
+.toolbar button.seg-active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.toolbar button.seg-active:hover { color: #fff; }
 
 button.chevron { border: 0; background: transparent; color: var(--muted); padding: 0 6px 0 0; font-size: 12px; cursor: pointer; }
 button.chevron:hover { color: var(--accent); }

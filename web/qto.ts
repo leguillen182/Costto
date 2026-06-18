@@ -116,10 +116,16 @@ let activeColor = "#2563eb";  // "brocha": color que reciben las mediciones nuev
 // precisión / navegación
 const SNAP_PX = 12;           // tolerancia de snap en píxeles de pantalla
 let snapActive = false;       // el cursor está enganchado a un vértice
-let spaceDown = false;        // barra espaciadora → modo pan
+let spaceDown = false;        // barra espaciadora → modo pan temporal
+let panMode = false;          // herramienta Mano (✋) activa → arrastrar mueve
 let panning = false;
 let panX = 0, panY = 0;
 let suppressClick = false;    // tras un pan, ignora el click siguiente (no añade punto)
+// zoom suave (pinch/Cmd+rueda) coalescido por frame
+let pendingZoom = 1.0;
+let zoomRaf = 0;
+let zoomBusy = false;
+let zoomAnchor: { cx: number; cy: number } | null = null;
 
 // refs de DOM
 let canvasWrap: HTMLDivElement;
@@ -130,6 +136,7 @@ let pageLabel: HTMLElement;
 let zoomLabel: HTMLElement;
 let scaleBadge: HTMLElement;
 let toolBtns: Partial<Record<Tool, HTMLButtonElement>> = {};
+let handBtn: HTMLButtonElement | null = null; // herramienta Mano (✋): arrastrar = pan
 let placeholder: HTMLElement;
 
 const CAL = "#b87400";   // ámbar — trazo de calibración
@@ -146,8 +153,9 @@ export function openQtoView(c: QtoContext): void {
   tool = null; draft = []; cursor = null;
   realUnit = "m";
   activeColor = "#2563eb";
-  snapActive = false; spaceDown = false; panning = false; suppressClick = false;
-  toolBtns = {};
+  snapActive = false; spaceDown = false; panMode = false; panning = false; suppressClick = false;
+  pendingZoom = 1.0; zoomAnchor = null;
+  toolBtns = {}; handBtn = null;
   renderView();
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
@@ -206,6 +214,7 @@ function renderView(): void {
     (zoomLabel = label("100%")),
     btn("+", () => setZoom(zoom * 1.25), "icon"),
     btn("Ajustar", () => fitWidth()),
+    (handBtn = btn("✋", () => togglePan(), "icon")),
   );
   wrap.appendChild(bar1);
 
@@ -329,6 +338,7 @@ async function loadPdf(file: File): Promise<void> {
     measurements = [];
     placeholder.style.display = "none";
     await renderPage();
+    await fitWidth(); // abre el plano ajustado al ancho del visor (no al 100% descuadrado)
     renderList();
   } catch (e) {
     await ctx?.showAlert(`No se pudo abrir el PDF: ${e}`, "Error");
@@ -385,6 +395,7 @@ async function gotoPage(n: number): Promise<void> {
 
 async function setZoom(z: number): Promise<void> {
   zoom = Math.min(8, Math.max(0.1, z));
+  pendingZoom = zoom; // mantén sincronizado el acumulador del zoom suave (botones/Ajustar/rueda)
   if (pdfDoc) await renderPage(); else refreshChrome();
 }
 
@@ -520,7 +531,7 @@ function applySnapAndOrtho(raw: Pt, e: MouseEvent): Pt {
 function onClick(e: MouseEvent): void {
   if (e.detail >= 2) return; // 2º click de un doble-click: lo cierra onDblClick (evita punto fantasma)
   if (suppressClick) { suppressClick = false; return; } // click residual tras un pan
-  if (!viewport || !tool || spaceDown) return;
+  if (!viewport || !tool || spaceDown || panMode) return;
   const raw = eventToPdf(e);
   if (tool === "conteo") {
     addCountMarker(raw); // el conteo no engancha
@@ -571,9 +582,16 @@ function onKeyUp(e: KeyboardEvent): void {
   }
 }
 
-// ---- pan (barra espaciadora + arrastrar, o botón central) ----
+// ---- herramienta Mano (✋): arrastrar con el botón izquierdo mueve el plano (sin barra espaciadora) ----
+function togglePan(): void {
+  panMode = !panMode;
+  handBtn?.classList.toggle("seg-active", panMode);
+  if (!panning) overlayCanvas.style.cursor = panMode ? "grab" : "";
+}
+
+// ---- pan (Mano, barra espaciadora + arrastrar, o botón central) ----
 function onMouseDown(e: MouseEvent): void {
-  if (e.button === 1 || (spaceDown && e.button === 0)) {
+  if (e.button === 1 || (panMode && e.button === 0) || (spaceDown && e.button === 0)) {
     e.preventDefault();
     panning = true;
     panX = e.clientX; panY = e.clientY;
@@ -591,27 +609,47 @@ function onPanMove(e: MouseEvent): void {
 function onPanUp(): void {
   panning = false;
   suppressClick = true; // no añadir punto al soltar el pan
-  overlayCanvas.style.cursor = spaceDown ? "grab" : "";
+  overlayCanvas.style.cursor = (panMode || spaceDown) ? "grab" : "";
   window.removeEventListener("mousemove", onPanMove);
   window.removeEventListener("mouseup", onPanUp);
 }
 
-// ---- zoom con rueda centrado en el cursor ----
+// ---- rueda: scroll de 2 dedos = pan nativo; pinch / Cmd+rueda = zoom suave (estilo Figma/Miro) ----
 function onWheel(e: WheelEvent): void {
   if (!pdfDoc || !viewport) return;
-  e.preventDefault();
-  zoomAtClient(e.deltaY < 0 ? 1.25 : 1 / 1.25, e.clientX, e.clientY);
+  // En Mac el pinch del trackpad llega como wheel con ctrlKey sintético; Cmd+rueda = metaKey.
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    requestZoom(e.deltaY * (e.deltaMode === 1 ? 16 : 1), e.clientX, e.clientY);
+    return;
+  }
+  // Scroll normal de dos dedos: dejar que canvasWrap (overflow:auto) haga pan nativo (ambos ejes).
 }
-async function zoomAtClient(factor: number, clientX: number, clientY: number): Promise<void> {
-  if (!viewport) return;
-  const orect = overlayCanvas.getBoundingClientRect();
-  const [px, py] = viewport.convertToPdfPoint(clientX - orect.left, clientY - orect.top);
-  await setZoom(zoom * factor);
-  if (!viewport) return;
-  const [vx, vy] = viewport.convertToViewportPoint(px!, py!); // css-px del mismo punto tras re-render
-  const wrect = canvasWrap.getBoundingClientRect();
-  canvasWrap.scrollLeft = vx! - (clientX - wrect.left); // mantener el punto bajo el cursor
-  canvasWrap.scrollTop = vy! - (clientY - wrect.top);
+// Acumula el gesto y aplica un único zoom por frame de animación → suave y sin saltos.
+function requestZoom(dy: number, cx: number, cy: number): void {
+  pendingZoom = Math.min(8, Math.max(0.1, pendingZoom * Math.exp(-dy * 0.0015)));
+  zoomAnchor = { cx, cy };
+  if (!zoomRaf) zoomRaf = requestAnimationFrame(applyPendingZoom);
+}
+async function applyPendingZoom(): Promise<void> {
+  zoomRaf = 0;
+  if (zoomBusy) { zoomRaf = requestAnimationFrame(applyPendingZoom); return; }
+  if (!viewport || !zoomAnchor) return;
+  zoomBusy = true;
+  try {
+    const { cx, cy } = zoomAnchor;
+    const orect = overlayCanvas.getBoundingClientRect();
+    const [px, py] = viewport.convertToPdfPoint(cx - orect.left, cy - orect.top); // punto bajo el cursor (PDF)
+    await setZoom(pendingZoom);
+    if (!viewport) return;
+    const [vx, vy] = viewport.convertToViewportPoint(px!, py!); // css-px del mismo punto tras re-render
+    const wrect = canvasWrap.getBoundingClientRect();
+    canvasWrap.scrollLeft = vx! - (cx - wrect.left); // mantener el punto bajo el cursor
+    canvasWrap.scrollTop = vy! - (cy - wrect.top);
+    pendingZoom = zoom; // re-sincroniza por si el clamp recortó
+  } finally {
+    zoomBusy = false;
+  }
 }
 
 function setTool(t: Tool): void {
