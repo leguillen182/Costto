@@ -61,6 +61,19 @@ describe("diálogo modal", () => {
     await expect(p).resolves.toBeUndefined();
   });
 
+  it("encola un segundo diálogo en vez de pisar el primero (reentrancy)", async () => {
+    const { showConfirm, showAlert } = await import("./main.js");
+    const a = showConfirm("Primero");
+    const b = showAlert("Segundo"); // disparado mientras A sigue abierto → debe encolarse, no pisar a A
+    expect(document.querySelectorAll("dialog").length).toBe(1);
+    expect(dlg().querySelector(".modal-msg")!.textContent).toBe("Primero");
+    submit();
+    expect(await a).toBe(true); // A resuelve (sin el fix quedaba colgada porque B le pisaba el form)
+    expect(dlg().querySelector(".modal-msg")!.textContent).toBe("Segundo"); // B ya abrió tras cerrarse A
+    submit();
+    await expect(b).resolves.toBeUndefined();
+  });
+
   it("showDialog: varios campos devuelve todos los valores", async () => {
     const { showDialog } = await import("./main.js");
     const p = showDialog({

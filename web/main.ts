@@ -81,9 +81,36 @@ interface DialogOptions {
 }
 
 let dialogEl: HTMLDialogElement | null = null;
+let dialogBusy = false;
+const dialogQueue: Array<{ opts: DialogOptions; resolve: (r: Record<string, string> | null) => void }> = [];
 
 // Resuelve con los valores de los campos al confirmar, o null al cancelar/Esc/click fuera.
+// Si ya hay un diálogo abierto, el siguiente se encola hasta que el actual se cierre. Sin esto,
+// una segunda llamada (p. ej. un showAlert fire-and-forget desde QTO mientras el teclado sigue
+// vivo) haría showModal() sobre un <dialog> ya abierto → InvalidStateError, dejando la primera
+// promesa colgada para siempre. El diálogo inactivo abre de forma síncrona (no rompe a quien
+// inspeccione el DOM al instante).
 export function showDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  if (dialogBusy) {
+    return new Promise((resolve) => dialogQueue.push({ opts, resolve }));
+  }
+  dialogBusy = true;
+  return runDialog(opts);
+}
+
+function runDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  const p = openDialog(opts);
+  p.then(advanceDialogQueue, advanceDialogQueue);
+  return p;
+}
+
+function advanceDialogQueue() {
+  const next = dialogQueue.shift();
+  if (next) runDialog(next.opts).then(next.resolve, () => next.resolve(null));
+  else dialogBusy = false;
+}
+
+function openDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
   if (!dialogEl) {
     dialogEl = document.createElement("dialog");
     dialogEl.className = "modal";
@@ -511,31 +538,63 @@ function recompute() {
 }
 
 // §04 — Resumen por capítulo con barras de proporción (sobre el subtotal de capítulos).
+// recompute() corre en cada tecla; para no rehacer el DOM ni recorrer el árbol cada vez,
+// las filas se construyen una vez por render() y luego solo se parchean los valores. Los
+// cambios estructurales (alta/baja/indent…) pasan por render(), que crea un summaryEl nuevo
+// e invalida la caché por identidad del contenedor.
+interface SummaryRow { id: string; item: BoqItem; code: HTMLElement; name: HTMLElement; fill: HTMLElement; pct: HTMLElement; amt: HTMLElement; }
+let summaryRows: SummaryRow[] | null = null;
+let summaryOwner: HTMLElement | null = null;
+
 function renderSummary(amounts: Record<string, number>) {
   if (!summaryEl) return;
+  if (summaryRows && summaryOwner === summaryEl) patchSummary(amounts);
+  else buildSummary(amounts);
+}
+
+function buildSummary(amounts: Record<string, number>) {
+  if (!summaryEl) return;
   summaryEl.innerHTML = "";
+  summaryRows = null;
+  summaryOwner = summaryEl;
   const chapters = ordered()
     .filter((o) => o.depth === 0 && o.item.nodeType === "group")
-    .map((o) => ({ item: o.item, amount: amounts[o.item.id] ?? 0 }));
+    .map((o) => o.item);
   if (chapters.length === 0) {
     const e = document.createElement("div"); e.className = "summary-empty";
     e.textContent = "Añade un capítulo para ver el desglose por proporción.";
     summaryEl.appendChild(e);
     return;
   }
-  const denom = chapters.reduce((s, c) => s + Math.max(0, c.amount), 0) || 1;
-  for (const c of chapters) {
-    const pct = Math.max(0, (c.amount / denom) * 100);
+  const rows: SummaryRow[] = [];
+  for (const item of chapters) {
     const row = document.createElement("div");
     row.className = "summary-row";
-    const code = document.createElement("span"); code.className = "s-code"; code.textContent = c.item.code ?? "";
-    const name = document.createElement("span"); name.className = "s-name"; name.textContent = c.item.description || "—";
+    const code = document.createElement("span"); code.className = "s-code";
+    const name = document.createElement("span"); name.className = "s-name";
     const bar = document.createElement("span"); bar.className = "s-bar";
-    const fill = document.createElement("i"); fill.style.width = `${pct.toFixed(1)}%`; bar.appendChild(fill);
-    const pctEl = document.createElement("span"); pctEl.className = "s-pct"; pctEl.textContent = `${Math.round(pct)}%`;
-    const amt = document.createElement("span"); amt.className = "s-amt"; amt.textContent = fmt(c.amount);
+    const fill = document.createElement("i"); bar.appendChild(fill);
+    const pctEl = document.createElement("span"); pctEl.className = "s-pct";
+    const amt = document.createElement("span"); amt.className = "s-amt";
     row.append(code, name, bar, pctEl, amt);
     summaryEl.appendChild(row);
+    rows.push({ id: item.id, item, code, name, fill, pct: pctEl, amt });
+  }
+  summaryRows = rows;
+  patchSummary(amounts);
+}
+
+function patchSummary(amounts: Record<string, number>) {
+  if (!summaryRows) return;
+  const denom = summaryRows.reduce((s, r) => s + Math.max(0, amounts[r.id] ?? 0), 0) || 1;
+  for (const r of summaryRows) {
+    const amount = amounts[r.id] ?? 0;
+    const pct = Math.max(0, (amount / denom) * 100);
+    r.code.textContent = r.item.code ?? "";
+    r.name.textContent = r.item.description || "—";
+    r.fill.style.width = `${pct.toFixed(1)}%`;
+    r.pct.textContent = `${Math.round(pct)}%`;
+    r.amt.textContent = fmt(amount);
   }
 }
 

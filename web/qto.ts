@@ -98,6 +98,7 @@ let pdfDoc: any = null;
 let pageObj: any = null;
 let viewport: Viewport | null = null;
 let currentRenderTask: { cancel(): void } | null = null; // render pdf.js en vuelo (cancelable)
+let renderGen = 0; // generación de render: solo la más reciente escribe pageObj/viewport/canvas
 let forceNewCount = false; // fuerza un grupo de conteo nuevo en el próximo click
 
 let numPages = 0;
@@ -348,10 +349,16 @@ async function loadPdf(file: File): Promise<void> {
 async function renderPage(): Promise<void> {
   if (!pdfDoc) return;
   // Cancela cualquier render en vuelo (zoom/página rápidos no deben solapar render() sobre el canvas).
+  const gen = ++renderGen;
   if (currentRenderTask) { currentRenderTask.cancel(); currentRenderTask = null; }
 
+  const page = await pdfDoc.getPage(pageNum);
+  // Si otra llamada (botón de zoom/página vs. rueda) arrancó mientras esperábamos getPage, esta
+  // quedó obsoleta: abortar antes de tocar los globales evita que viewport/canvas queden
+  // desincronizados del bitmap pintado (mediciones cayendo corridas del plano).
+  if (gen !== renderGen) { try { page.cleanup(); } catch { /* no-op */ } return; }
   const prev = pageObj;
-  pageObj = await pdfDoc.getPage(pageNum);
+  pageObj = page;
   if (prev && prev !== pageObj) { try { prev.cleanup(); } catch { /* no-op */ } }
   const vp = pageObj.getViewport({ scale: zoom, rotation: ROTATION }) as Viewport;
   viewport = vp;
@@ -793,6 +800,7 @@ function renderList(): void {
     }
 
     const newBtn = btn("+ partida", async () => {
+      if (m.sent) return; // ya enviada: no duplicar la partida
       sendMeasurementAsNewLine(ctx!, m, sel.value || null, lbl.value);
       m.sent = true;
       renderList();
@@ -800,6 +808,7 @@ function renderList(): void {
     }, "icon");
 
     const selBtn = btn("→ sel.", async () => {
+      if (m.sent) return; // ya enviada: no re-sobrescribir
       const res = sendMeasurementToSelected(ctx!, m);
       if (!res.ok) {
         await ctx!.showAlert(
@@ -814,6 +823,8 @@ function renderList(): void {
       renderList();
       await ctx!.showAlert(`Cantidad enviada a la partida seleccionada: ${fmtQty(m)}.`, "QTO");
     }, "icon");
+    newBtn.disabled = !!m.sent;
+    selBtn.disabled = !!m.sent;
 
     const del = btn("×", () => {
       measurements = measurements.filter((x) => x.id !== m.id);
