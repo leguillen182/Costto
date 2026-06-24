@@ -35,6 +35,33 @@ const EDITABLE = ["code", "description", "unit", "quantity", "unitRate"] as cons
 type Col = (typeof EDITABLE)[number];
 const NUMERIC: Col[] = ["quantity", "unitRate"];
 
+// ---- visibilidad de columnas (mostrar/ocultar; description y acciones siempre visibles) ----
+const TOGGLE_COLS = [
+  { key: "code", label: "Código" },
+  { key: "unit", label: "Unidad" },
+  { key: "quantity", label: "Cantidad" },
+  { key: "unitRate", label: "P. Unitario" },
+  { key: "amount", label: "Importe" },
+] as const;
+type ToggleCol = (typeof TOGGLE_COLS)[number]["key"];
+
+let colVisible: Record<ToggleCol, boolean> = loadColVisible();
+function loadColVisible(): Record<ToggleCol, boolean> {
+  const def = Object.fromEntries(TOGGLE_COLS.map((c) => [c.key, true])) as Record<ToggleCol, boolean>;
+  try { return { ...def, ...JSON.parse(localStorage.getItem("colVisible") ?? "{}") }; }
+  catch { return def; }
+}
+function setColVisible(key: ToggleCol, on: boolean) {
+  colVisible[key] = on;
+  localStorage.setItem("colVisible", JSON.stringify(colVisible));
+  render();
+}
+const isVis = (key: ToggleCol) => colVisible[key] !== false;
+// Nº de columnas visibles entre unit/quantity/unitRate (para el colSpan del spacer de grupo).
+const visibleMidCols = () => (["unit", "quantity", "unitRate"] as ToggleCol[]).filter(isVis).length;
+// Nº total de columnas visibles (description + acciones siempre + togglecolumns visibles).
+const visibleColCount = () => 2 + TOGGLE_COLS.filter((c) => isVis(c.key)).length;
+
 // ---- API ----
 async function load() {
   try {
@@ -491,7 +518,7 @@ function makeBreakdownRow(it: BoqItem): HTMLTableRowElement {
   const tr = document.createElement("tr");
   tr.className = "detail-row";
   const td = document.createElement("td");
-  td.colSpan = 7;
+  td.colSpan = visibleColCount();
 
   const box = document.createElement("div");
   box.className = "breakdown";
@@ -747,6 +774,24 @@ function render() {
   const bDetailed = button("Detallada (desglose)", () => setDetailLevel("detailed"), detailed ? "seg-active" : "");
   seg.append(bSimple, bDetailed);
   viewbar.append(vlabel, seg);
+
+  // Mostrar/ocultar columnas (preferencia local, persistida en localStorage).
+  const clabel = document.createElement("span");
+  clabel.className = "rowbar-label";
+  clabel.textContent = "Columnas:";
+  const cols = document.createElement("div");
+  cols.className = "colpicker";
+  for (const c of TOGGLE_COLS) {
+    const lab = document.createElement("label");
+    lab.className = "colpicker-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = isVis(c.key);
+    cb.addEventListener("change", () => setColVisible(c.key, cb.checked));
+    lab.append(cb, document.createTextNode(c.label));
+    cols.appendChild(lab);
+  }
+  viewbar.append(clabel, cols);
   wrap.appendChild(viewbar);
 
   // Barra de acciones sobre la fila seleccionada
@@ -766,11 +811,24 @@ function render() {
   wrap.appendChild(rowbar);
 
   const table = document.createElement("table");
-  table.innerHTML = `<thead><tr>
-    <th style="width:90px">Código</th><th>Descripción</th><th style="width:70px">Unidad</th>
-    <th class="num" style="width:90px">Cantidad</th><th class="num" style="width:120px">P. Unitario</th>
-    <th class="num" style="width:140px">Importe</th><th style="width:90px"></th>
-  </tr></thead>`;
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  const th = (label: string, opts: { width?: string; num?: boolean } = {}) => {
+    const el = document.createElement("th");
+    el.textContent = label;
+    if (opts.num) el.className = "num";
+    if (opts.width) el.style.width = opts.width;
+    return el;
+  };
+  if (isVis("code")) htr.appendChild(th("Código", { width: "90px" }));
+  htr.appendChild(th("Descripción"));
+  if (isVis("unit")) htr.appendChild(th("Unidad", { width: "70px" }));
+  if (isVis("quantity")) htr.appendChild(th("Cantidad", { width: "90px", num: true }));
+  if (isVis("unitRate")) htr.appendChild(th("P. Unitario", { width: "120px", num: true }));
+  if (isVis("amount")) htr.appendChild(th("Importe", { width: "140px", num: true }));
+  htr.appendChild(th("", { width: "90px" }));
+  thead.appendChild(htr);
+  table.appendChild(thead);
   const tbody = document.createElement("tbody");
 
   for (const { item, depth } of ordered()) {
@@ -780,7 +838,7 @@ function render() {
     if (item.id === selectedId) tr.classList.add("selected");
     tr.addEventListener("click", () => selectRow(item.id));
 
-    const tdCode = td("code"); tdCode.appendChild(makeCell(item, "code")); tr.appendChild(tdCode);
+    if (isVis("code")) { const tdCode = td("code"); tdCode.appendChild(makeCell(item, "code")); tr.appendChild(tdCode); }
 
     const tdDesc = td();
     const pad = document.createElement("span"); pad.className = "depth-pad"; pad.style.width = `${depth * 18}px`;
@@ -798,14 +856,17 @@ function render() {
     tdDesc.appendChild(descWrap); tr.appendChild(tdDesc);
 
     if (item.nodeType === "line") {
-      const u = td(); u.appendChild(makeCell(item, "unit")); tr.appendChild(u);
-      const q = td("num"); q.appendChild(makeCell(item, "quantity")); tr.appendChild(q);
-      const rt = td("num"); rt.appendChild(makeCell(item, "unitRate")); tr.appendChild(rt);
+      if (isVis("unit")) { const u = td(); u.appendChild(makeCell(item, "unit")); tr.appendChild(u); }
+      if (isVis("quantity")) { const q = td("num"); q.appendChild(makeCell(item, "quantity")); tr.appendChild(q); }
+      if (isVis("unitRate")) { const rt = td("num"); rt.appendChild(makeCell(item, "unitRate")); tr.appendChild(rt); }
     } else {
-      const spacer = document.createElement("td"); spacer.colSpan = 3; tr.appendChild(spacer);
+      const span = visibleMidCols();
+      if (span > 0) { const spacer = document.createElement("td"); spacer.colSpan = span; tr.appendChild(spacer); }
     }
 
-    const tdAmt = document.createElement("td"); tdAmt.className = "amount"; amountCells.set(item.id, tdAmt); tr.appendChild(tdAmt);
+    if (isVis("amount")) {
+      const tdAmt = document.createElement("td"); tdAmt.className = "amount"; amountCells.set(item.id, tdAmt); tr.appendChild(tdAmt);
+    }
 
     const tdAct = document.createElement("td"); tdAct.className = "actions";
     if (item.nodeType === "group") tdAct.appendChild(button("+ partida", () => addLine(item.id), "icon"));

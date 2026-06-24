@@ -65,6 +65,10 @@ tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .seg button.seg-active { background: var(--accent); color: #fff; }
 .seg button.seg-active:hover { color: #fff; }
 
+.colpicker { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+.colpicker-item { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+.colpicker-item input { cursor: pointer; margin: 0; }
+
 button.chevron { border: 0; background: transparent; color: var(--muted); padding: 0 6px 0 0; font-size: 12px; cursor: pointer; }
 button.chevron:hover { color: var(--accent); }
 button.chevron.has-breakdown { color: var(--accent); }
