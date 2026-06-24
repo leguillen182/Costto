@@ -4,6 +4,7 @@ import { recalculate, componentSum, costPerArea } from "../src/calc";
 import { validate } from "../src/validate";
 import * as tree from "../src/tree";
 import { openQtoView, type QtoContext } from "./qto.js";
+import { button } from "./dom.js";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
 
 const uid = () => crypto.randomUUID();
@@ -1159,13 +1160,6 @@ function toggleTheme() {
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("costto-theme", next); } catch { /* sin localStorage: solo sesión */ }
   render();
-}
-function button(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.textContent = label;
-  if (cls) b.className = cls;
-  b.addEventListener("click", onClick);
-  return b;
 }
 function td(cls = ""): HTMLTableCellElement {
   const c = document.createElement("td");

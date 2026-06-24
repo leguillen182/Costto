@@ -5,9 +5,10 @@
 import type { BoqItem } from "../src/types.js";
 import {
   deriveQuantity, calibrationFactor, defaultUnit,
-  orthoConstrain, nearestPointIndex, scaleRatioToFactor,
+  orthoConstrain, scaleRatioToFactor,
   type Pt, type PageScale, type MeasureKind,
 } from "../src/qto.js";
+import { button as btn } from "./dom.js";
 
 // ---- contrato de integración con el editor (lo construye main.ts cerrando sobre sus vars) ----
 export interface QtoContext {
@@ -172,14 +173,6 @@ function leave(): void {
 }
 
 // ============================ construcción del DOM de la vista ============================
-function btn(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.textContent = label;
-  if (cls) b.className = cls;
-  b.addEventListener("click", onClick);
-  return b;
-}
-
 function renderView(): void {
   const app = document.getElementById("app")!;
   app.innerHTML = "";
@@ -509,29 +502,27 @@ function eventToPdf(e: MouseEvent): Pt {
   return { x: x!, y: y! };
 }
 
-/** Vértices a los que se puede enganchar (mediciones de la página + borrador actual). */
-function candidateVertices(): Pt[] {
-  const out: Pt[] = [];
-  for (const m of measurements) if (m.page === pageNum) out.push(...m.points);
-  out.push(...draft);
-  return out;
-}
-
 /** Aplica orto-lock (Shift, relativo al último punto) o snapping a vértice cercano (en px de pantalla). */
 function applySnapAndOrtho(raw: Pt, e: MouseEvent): Pt {
   snapActive = false;
   const prev = draft[draft.length - 1];
   if (e.shiftKey && prev) return orthoConstrain(prev, raw);
   if (!viewport) return raw;
-  const cands = candidateVertices();
-  if (!cands.length) return raw;
+  // onMove llama a esto en cada mousemove: se busca el vértice más cercano (en px de pantalla)
+  // dentro del umbral en una sola pasada, sin materializar arrays de candidatos/proyecciones.
+  // Equivale a nearestPointIndex (umbral inclusivo, desempate al candidato posterior).
   const t = viewport.convertToViewportPoint(raw.x, raw.y);
-  const candVp = cands.map((c) => {
+  const tx = t[0]!, ty = t[1]!;
+  let best: Pt | null = null;
+  let bestD = SNAP_PX;
+  const consider = (c: Pt) => {
     const v = viewport!.convertToViewportPoint(c.x, c.y);
-    return { x: v[0]!, y: v[1]! };
-  });
-  const idx = nearestPointIndex({ x: t[0]!, y: t[1]! }, candVp, SNAP_PX);
-  if (idx >= 0) { snapActive = true; return cands[idx]!; }
+    const d = Math.hypot(v[0]! - tx, v[1]! - ty);
+    if (d <= bestD) { bestD = d; best = c; }
+  };
+  for (const m of measurements) if (m.page === pageNum) for (const p of m.points) consider(p);
+  for (const p of draft) consider(p);
+  if (best) { snapActive = true; return best; }
   return raw;
 }
 
@@ -756,85 +747,122 @@ function fmtQty(m: Measurement): string {
   return `${q} ${m.unit}`;
 }
 
+// Fila cacheada del panel: se reusa entre renders y solo se le parchean los valores cambiantes.
+interface QtoRow { row: HTMLElement; qty: HTMLElement; newBtn: HTMLButtonElement; selBtn: HTMLButtonElement; }
+let qtoRows: Map<string, QtoRow> | null = null;
+let qtoListOwner: HTMLElement | null = null;
+
 function renderList(): void {
   if (!listEl) return;
-  listEl.innerHTML = "";
   if (!measurements.length) {
+    listEl.innerHTML = "";
+    qtoRows = null;
+    qtoListOwner = listEl;
     const empty = document.createElement("div");
     empty.className = "qto-empty";
     empty.textContent = "Aún no hay mediciones. Calibra y mide sobre el plano.";
     listEl.appendChild(empty);
     return;
   }
-  const groups = ctx?.getGroups() ?? [];
-  for (const m of measurements) {
-    const row = document.createElement("div");
-    row.className = "qto-item" + (m.sent ? " sent" : "");
-
-    const swatch = document.createElement("span");
-    swatch.className = "qto-swatch";
-    swatch.style.background = m.color;
-
-    const icon = document.createElement("span");
-    icon.className = "qto-icon";
-    icon.textContent = m.kind === "length" ? "📐" : m.kind === "area" ? "⬡" : "📍";
-
-    const lbl = document.createElement("input");
-    lbl.className = "qto-label";
-    lbl.value = m.label;
-    lbl.addEventListener("input", () => (m.label = lbl.value));
-
-    const qty = document.createElement("span");
-    qty.className = "qto-qty";
-    qty.textContent = fmtQty(m);
-
-    const sel = document.createElement("select");
-    sel.className = "qto-group";
-    const root = document.createElement("option");
-    root.value = ""; root.textContent = "(raíz)";
-    sel.appendChild(root);
-    for (const g of groups) {
-      const o = document.createElement("option");
-      o.value = g.id; o.textContent = g.label;
-      sel.appendChild(o);
-    }
-
-    const newBtn = btn("+ partida", async () => {
-      if (m.sent) return; // ya enviada: no duplicar la partida
-      sendMeasurementAsNewLine(ctx!, m, sel.value || null, lbl.value);
-      m.sent = true;
-      renderList();
-      await ctx!.showAlert(`Partida creada: ${fmtQty(m)}.`, "QTO");
-    }, "icon");
-
-    const selBtn = btn("→ sel.", async () => {
-      if (m.sent) return; // ya enviada: no re-sobrescribir
-      const res = sendMeasurementToSelected(ctx!, m);
-      if (!res.ok) {
-        await ctx!.showAlert(
-          res.reason === "no-selection"
-            ? "Primero selecciona una partida (línea) en el editor."
-            : "La fila seleccionada es un capítulo, no una partida.",
-          "QTO",
-        );
-        return;
-      }
-      m.sent = true;
-      renderList();
-      await ctx!.showAlert(`Cantidad enviada a la partida seleccionada: ${fmtQty(m)}.`, "QTO");
-    }, "icon");
-    newBtn.disabled = !!m.sent;
-    selBtn.disabled = !!m.sent;
-
-    const del = btn("×", () => {
-      measurements = measurements.filter((x) => x.id !== m.id);
-      redrawOverlay();
-      renderList();
-    }, "icon del");
-
-    row.append(swatch, icon, lbl, qty, sel, newBtn, selBtn, del);
-    listEl.appendChild(row);
+  // Reconciliación: parchear filas existentes, crear las nuevas y quitar las borradas, en vez de
+  // reconstruir todo. renderList corre por cada marca de conteo; el rebuild recreaba un <select>
+  // de capítulos por fila en cada click (O(mediciones × capítulos)).
+  if (!qtoRows || qtoListOwner !== listEl) {
+    listEl.innerHTML = "";
+    qtoRows = new Map();
+    qtoListOwner = listEl;
   }
+  const rows = qtoRows;
+  const live = new Set(measurements.map((m) => m.id));
+  let groups: { id: string; label: string }[] | null = null;
+  for (const m of measurements) {
+    let r = rows.get(m.id);
+    if (!r) {
+      if (!groups) groups = ctx?.getGroups() ?? [];
+      r = buildRow(m, groups);
+      rows.set(m.id, r);
+      listEl.appendChild(r.row);
+    }
+    patchRow(r, m);
+  }
+  for (const [id, r] of rows) {
+    if (!live.has(id)) { r.row.remove(); rows.delete(id); }
+  }
+}
+
+// Solo cambia con la medición: cantidad y estado "enviada" (clase + botones deshabilitados).
+function patchRow(r: QtoRow, m: Measurement): void {
+  r.qty.textContent = fmtQty(m);
+  r.row.className = "qto-item" + (m.sent ? " sent" : "");
+  r.newBtn.disabled = !!m.sent;
+  r.selBtn.disabled = !!m.sent;
+}
+
+function buildRow(m: Measurement, groups: { id: string; label: string }[]): QtoRow {
+  const row = document.createElement("div");
+
+  const swatch = document.createElement("span");
+  swatch.className = "qto-swatch";
+  swatch.style.background = m.color;
+
+  const icon = document.createElement("span");
+  icon.className = "qto-icon";
+  icon.textContent = m.kind === "length" ? "📐" : m.kind === "area" ? "⬡" : "📍";
+
+  const lbl = document.createElement("input");
+  lbl.className = "qto-label";
+  lbl.value = m.label;
+  lbl.addEventListener("input", () => (m.label = lbl.value));
+
+  const qty = document.createElement("span");
+  qty.className = "qto-qty";
+
+  const sel = document.createElement("select");
+  sel.className = "qto-group";
+  const root = document.createElement("option");
+  root.value = ""; root.textContent = "(raíz)";
+  sel.appendChild(root);
+  for (const g of groups) {
+    const o = document.createElement("option");
+    o.value = g.id; o.textContent = g.label;
+    sel.appendChild(o);
+  }
+
+  const newBtn = btn("+ partida", async () => {
+    if (m.sent) return; // ya enviada: no duplicar la partida
+    sendMeasurementAsNewLine(ctx!, m, sel.value || null, lbl.value);
+    m.sent = true;
+    renderList();
+    await ctx!.showAlert(`Partida creada: ${fmtQty(m)}.`, "QTO");
+  }, "icon");
+
+  const selBtn = btn("→ sel.", async () => {
+    if (m.sent) return; // ya enviada: no re-sobrescribir
+    const res = sendMeasurementToSelected(ctx!, m);
+    if (!res.ok) {
+      await ctx!.showAlert(
+        res.reason === "no-selection"
+          ? "Primero selecciona una partida (línea) en el editor."
+          : "La fila seleccionada es un capítulo, no una partida.",
+        "QTO",
+      );
+      return;
+    }
+    m.sent = true;
+    renderList();
+    await ctx!.showAlert(`Cantidad enviada a la partida seleccionada: ${fmtQty(m)}.`, "QTO");
+  }, "icon");
+
+  const del = btn("×", () => {
+    measurements = measurements.filter((x) => x.id !== m.id);
+    redrawOverlay();
+    renderList();
+  }, "icon del");
+
+  row.append(swatch, icon, lbl, qty, sel, newBtn, selBtn, del);
+  const r: QtoRow = { row, qty, newBtn, selBtn };
+  patchRow(r, m);
+  return r;
 }
 
 // ============================ chrome (etiquetas/estado) ============================
