@@ -1131,6 +1131,11 @@ function render() {
     markDirty();
     recompute();
   });
+  // Al salir del campo, reconcilia el texto con el valor guardado: '0'/'-5'/'' → campo vacío
+  // (evita mostrar un número que el sistema trata como "sin área", con el costo/m² en "—").
+  areaInput.addEventListener("change", () => {
+    areaInput.value = boq.builtArea != null ? String(boq.builtArea) : "";
+  });
   m2DirectEl = totals.querySelector("#t-m2-direct");
   m2TotalEl = totals.querySelector("#t-m2-total");
 

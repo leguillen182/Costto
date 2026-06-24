@@ -212,6 +212,10 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       }
       if ("builtArea" in body) {
         const a = body.builtArea;
+        if (a !== null && typeof a !== "number") {
+          return json(res, 400, { error: "builtArea debe ser un número o null" });
+        }
+        // ≤ 0 / NaN → "sin área" (null): normalización consciente de F4.
         updateBoqBuiltArea(db, id, typeof a === "number" && a > 0 ? a : null);
       }
       onMutate();
