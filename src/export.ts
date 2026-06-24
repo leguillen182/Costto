@@ -1,6 +1,7 @@
 // Exportación de un BOQ a Excel (.xlsx) con ExcelJS.
 import ExcelJS from "exceljs";
 import type { Boq, BoqItem, BoqCalcResult } from "./types.js";
+import { costPerArea } from "./calc.js";
 
 function orderedItems(items: BoqItem[]): { item: BoqItem; depth: number }[] {
   const byParent = new Map<string | null, BoqItem[]>();
@@ -82,6 +83,19 @@ export async function buildWorkbook(boq: Boq, items: BoqItem[], calc: BoqCalcRes
   const total = ws.addRow({ unitRate: "TOTAL", amount: calc.total });
   total.font = { bold: true, size: 12 };
   total.getCell("amount").numFmt = MONEY;
+
+  // Costo por m² construido (F4), solo si hay área definida.
+  const cpa = costPerArea(calc, boq.builtArea, boq.roundingDecimals ?? 2);
+  if (cpa) {
+    ws.addRow([]);
+    const area = ws.addRow({ unitRate: "Área construida (m²)", amount: cpa.area });
+    area.getCell("amount").numFmt = "#,##0.00";
+    const direct = ws.addRow({ unitRate: "Costo directo / m²", amount: cpa.directPerM2 });
+    direct.getCell("amount").numFmt = MONEY;
+    const perM2 = ws.addRow({ unitRate: "Costo / m² (con markups)", amount: cpa.totalPerM2 });
+    perM2.font = { bold: true };
+    perM2.getCell("amount").numFmt = MONEY;
+  }
 
   return wb;
 }

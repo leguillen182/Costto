@@ -13,6 +13,7 @@ import {
   insertMarkups,
   saveBoqContents,
   updateBoqDetailLevel,
+  updateBoqBuiltArea,
   listBoqs,
   createBudget,
   createSnapshot,
@@ -46,7 +47,7 @@ function parseBody<T>(raw: string): T {
 export function seedIfEmpty(db: AppDb) {
   if (getBoq(db, "b1")) return;
   createProject(db, { id: "p1", name: "Torre A", baseCurrency: "DOP" });
-  createBoq(db, { id: "b1", projectId: "p1", name: "Presupuesto base — Torre A", kind: "owner_budget", currency: "DOP", roundingDecimals: 2 });
+  createBoq(db, { id: "b1", projectId: "p1", name: "Presupuesto base — Torre A", kind: "owner_budget", currency: "DOP", roundingDecimals: 2, builtArea: 1200 });
   insertItems(db, [
     { id: "c1", boqId: "b1", parentId: null, sortOrder: 1, code: "01", description: "Movimiento de tierra", nodeType: "group" },
     { id: "l1", boqId: "b1", parentId: "c1", sortOrder: 1, code: "01.01", description: "Excavación", nodeType: "line", lineType: "unit_price", quantity: 100, unit: "m³", unitRate: 350 },
@@ -203,10 +204,15 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
         items?: BoqItem[];
         markups?: MarkupRule[];
         detailLevel?: "simple" | "detailed";
+        builtArea?: number | null;
       }>(await readBody(req));
       saveBoqContents(db, id, body.items ?? [], body.markups ?? []);
       if (body.detailLevel === "simple" || body.detailLevel === "detailed") {
         updateBoqDetailLevel(db, id, body.detailLevel);
+      }
+      if ("builtArea" in body) {
+        const a = body.builtArea;
+        updateBoqBuiltArea(db, id, typeof a === "number" && a > 0 ? a : null);
       }
       onMutate();
       return json(res, 200, { ok: true, calc: calcBoq(db, id) });

@@ -26,6 +26,7 @@
   "dependencies": {
     "better-sqlite3": "^12.10.0",
     "drizzle-orm": "^0.45.2",
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "pdfjs-dist": "^4.10.38"
   }
 }

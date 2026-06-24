@@ -1,8 +1,9 @@
 // Editor de BOQ — keyboard-first (Tarea 1.3 + persistencia).
 // Reusa el motor de cálculo puro (../src/calc). Carga/guarda vía API (/api) → SQLite.
-import { recalculate, componentSum } from "../src/calc";
+import { recalculate, componentSum, costPerArea } from "../src/calc";
 import { validate } from "../src/validate";
 import * as tree from "../src/tree";
+import { openQtoView, type QtoContext } from "./qto.js";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
 
 const uid = () => crypto.randomUUID();
@@ -48,7 +49,7 @@ async function load() {
     render();
     setStatus("saved");
   } catch (e) {
-    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:#b00">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
+    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:var(--error)">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
   }
 }
 
@@ -58,7 +59,7 @@ async function save() {
     const r = await fetch(`/api/boq/${currentBoqId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items, markups, detailLevel: boq.detailLevel ?? "simple" }),
+      body: JSON.stringify({ items, markups, detailLevel: boq.detailLevel ?? "simple", builtArea: boq.builtArea ?? null }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     setStatus("saved");
@@ -66,6 +67,146 @@ async function save() {
     setStatus("error");
   }
 }
+
+// ---- diálogo modal (reemplaza alert/confirm/prompt nativos) ----
+// API estilo HIG: un <dialog> nativo (atrapa el foco, Esc cierra) reutilizado.
+interface DialogField { name: string; label: string; value?: string; placeholder?: string; type?: string; }
+interface DialogOptions {
+  title: string;
+  message?: string;
+  fields?: DialogField[];
+  confirmLabel?: string;
+  cancelLabel?: string | null; // null => sin botón cancelar (modo alerta)
+  danger?: boolean;
+}
+
+let dialogEl: HTMLDialogElement | null = null;
+let dialogBusy = false;
+const dialogQueue: Array<{ opts: DialogOptions; resolve: (r: Record<string, string> | null) => void }> = [];
+
+// Resuelve con los valores de los campos al confirmar, o null al cancelar/Esc/click fuera.
+// Si ya hay un diálogo abierto, el siguiente se encola hasta que el actual se cierre. Sin esto,
+// una segunda llamada (p. ej. un showAlert fire-and-forget desde QTO mientras el teclado sigue
+// vivo) haría showModal() sobre un <dialog> ya abierto → InvalidStateError, dejando la primera
+// promesa colgada para siempre. El diálogo inactivo abre de forma síncrona (no rompe a quien
+// inspeccione el DOM al instante).
+export function showDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  if (dialogBusy) {
+    return new Promise((resolve) => dialogQueue.push({ opts, resolve }));
+  }
+  dialogBusy = true;
+  return runDialog(opts);
+}
+
+function runDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  const p = openDialog(opts);
+  p.then(advanceDialogQueue, advanceDialogQueue);
+  return p;
+}
+
+function advanceDialogQueue() {
+  const next = dialogQueue.shift();
+  if (next) runDialog(next.opts).then(next.resolve, () => next.resolve(null));
+  else dialogBusy = false;
+}
+
+function openDialog(opts: DialogOptions): Promise<Record<string, string> | null> {
+  if (!dialogEl) {
+    dialogEl = document.createElement("dialog");
+    dialogEl.className = "modal";
+    document.body.appendChild(dialogEl);
+  }
+  const dlg = dialogEl;
+  return new Promise((resolve) => {
+    const fields = opts.fields ?? [];
+    const form = document.createElement("form");
+    form.method = "dialog";
+
+    const h = document.createElement("h2");
+    h.className = "modal-title";
+    h.textContent = opts.title;
+    form.appendChild(h);
+
+    if (opts.message) {
+      const p = document.createElement("p");
+      p.className = "modal-msg";
+      p.textContent = opts.message;
+      form.appendChild(p);
+    }
+
+    const inputs: Record<string, HTMLInputElement> = {};
+    for (const f of fields) {
+      const wrap = document.createElement("label");
+      wrap.className = "modal-field";
+      const span = document.createElement("span");
+      span.textContent = f.label;
+      const inp = document.createElement("input");
+      inp.type = f.type ?? "text";
+      inp.value = f.value ?? "";
+      if (f.placeholder) inp.placeholder = f.placeholder;
+      wrap.append(span, inp);
+      form.appendChild(wrap);
+      inputs[f.name] = inp;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    if (opts.cancelLabel !== null) {
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.textContent = opts.cancelLabel ?? "Cancelar";
+      cancelBtn.addEventListener("click", () => settle(null));
+      actions.appendChild(cancelBtn);
+    }
+    const okBtn = document.createElement("button");
+    okBtn.type = "submit";
+    okBtn.className = "primary" + (opts.danger ? " danger" : "");
+    okBtn.textContent = opts.confirmLabel ?? "Aceptar";
+    actions.appendChild(okBtn);
+    form.appendChild(actions);
+
+    let settled = false;
+    function settle(result: Record<string, string> | null) {
+      if (settled) return;
+      settled = true;
+      dlg.removeEventListener("cancel", onCancel);
+      dlg.removeEventListener("click", onBackdrop);
+      dlg.close();
+      resolve(result);
+    }
+    const onCancel = (e: Event) => { e.preventDefault(); settle(null); }; // Esc
+    const onBackdrop = (e: MouseEvent) => { if (e.target === dlg) settle(null); };
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const out: Record<string, string> = {};
+      for (const f of fields) out[f.name] = inputs[f.name]!.value;
+      settle(out);
+    });
+    dlg.addEventListener("cancel", onCancel);
+    dlg.addEventListener("click", onBackdrop);
+
+    dlg.replaceChildren(form);
+    dlg.showModal();
+    const first = fields.length ? inputs[fields[0]!.name]! : okBtn;
+    first.focus();
+    if (first instanceof HTMLInputElement) first.select();
+  });
+}
+
+export const showAlert = (message: string, title = "Aviso"): Promise<void> =>
+  showDialog({ title, message, confirmLabel: "OK", cancelLabel: null }).then(() => {});
+
+export const showConfirm = (
+  message: string,
+  opts: { title?: string; confirmLabel?: string; danger?: boolean } = {},
+): Promise<boolean> =>
+  showDialog({ title: opts.title ?? "Confirmar", message, confirmLabel: opts.confirmLabel ?? "Continuar", danger: opts.danger })
+    .then((r) => r !== null);
+
+export const showPrompt = (label: string, def = "", title = label): Promise<string | null> =>
+  showDialog({ title, fields: [{ name: "value", label, value: def }], confirmLabel: "Aceptar" })
+    .then((r) => (r === null ? null : r.value ?? ""));
 
 async function exportExcel() {
   await save(); // exporta el estado persistido
@@ -79,7 +220,7 @@ function importExcel() {
   input.addEventListener("change", async () => {
     const file = input.files?.[0];
     if (!file) return;
-    if (!confirm(`Importar "${file.name}" reemplazará las partidas actuales del presupuesto. ¿Continuar?`)) return;
+    if (!(await showConfirm(`Importar "${file.name}" reemplazará las partidas actuales del presupuesto. ¿Continuar?`, { title: "Importar Excel", confirmLabel: "Importar" }))) return;
     setStatus("saving");
     try {
       const buf = await file.arrayBuffer();
@@ -91,14 +232,15 @@ function importExcel() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       await load();
-      alert(
+      await showAlert(
         d.flat
           ? `Importadas ${d.rowsRead} filas sin jerarquía: todas quedaron en raíz. Si tu Excel tenía capítulos, revisa que las partidas usen indentación en la columna Descripción.`
           : `Importadas ${d.rowsRead} filas.`,
+        "Importación completa",
       );
     } catch (e) {
       setStatus("error");
-      alert(`Error al importar: ${e}`);
+      await showAlert(`Error al importar: ${e}`, "Error al importar");
     }
   });
   input.click();
@@ -115,16 +257,25 @@ async function loadList() {
 }
 async function switchBoq(id: string) {
   if (id === currentBoqId) return;
-  if (dirty && !confirm("Hay cambios sin guardar. ¿Cambiar de presupuesto y descartarlos?")) return;
+  if (dirty && !(await showConfirm("Hay cambios sin guardar. ¿Cambiar de presupuesto y descartarlos?", { title: "Cambios sin guardar", confirmLabel: "Descartar y cambiar", danger: true }))) return;
   currentBoqId = id;
   localStorage.setItem("boqId", id);
   await load();
 }
 async function newBudget() {
-  const projectName = prompt("Nombre del proyecto:", "Nuevo proyecto");
-  if (projectName == null) return;
-  const boqName = prompt("Nombre del presupuesto:", "Presupuesto base") ?? "Presupuesto base";
-  const currency = (prompt("Moneda (DOP / USD):", "DOP") ?? "DOP").toUpperCase();
+  const r0 = await showDialog({
+    title: "Nuevo presupuesto",
+    fields: [
+      { name: "projectName", label: "Nombre del proyecto", value: "Nuevo proyecto" },
+      { name: "boqName", label: "Nombre del presupuesto", value: "Presupuesto base" },
+      { name: "currency", label: "Moneda (DOP / USD)", value: "DOP" },
+    ],
+    confirmLabel: "Crear",
+  });
+  if (r0 == null) return;
+  const projectName = r0.projectName!.trim() || "Nuevo proyecto";
+  const boqName = r0.boqName!.trim() || "Presupuesto base";
+  const currency = (r0.currency!.trim() || "DOP").toUpperCase();
   const r = await fetch("/api/boqs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -155,7 +306,7 @@ let compareData: CompareData | null = null;
 
 async function openCompare() {
   const others = boqList.filter((b) => b.id !== currentBoqId);
-  if (others.length === 0) { alert("Necesitas al menos 2 presupuestos para comparar. Crea otro con '+ Nuevo'."); return; }
+  if (others.length === 0) { await showAlert("Necesitas al menos 2 presupuestos para comparar. Crea otro con '+ Nuevo'.", "Comparar"); return; }
   compareWithId = others.some((b) => b.id === compareWithId) ? compareWithId : others[0]!.id;
   compareMode = true;
   await loadCompare();
@@ -186,15 +337,15 @@ async function loadSnapshots() {
   render();
 }
 async function freezeSnapshot() {
-  const label = prompt("Etiqueta de la versión:", "Rev.0 aprobado");
+  const label = await showPrompt("Etiqueta de la versión", "Rev.0 aprobado", "Congelar versión");
   if (label == null) return;
-  if (dirty && !confirm("Hay cambios sin guardar. Se congelará el estado YA GUARDADO en la base, no los cambios pendientes. ¿Continuar?")) return;
+  if (dirty && !(await showConfirm("Hay cambios sin guardar. Se congelará el estado YA GUARDADO en la base, no los cambios pendientes. ¿Continuar?", { title: "Cambios sin guardar", confirmLabel: "Congelar lo guardado" }))) return;
   const r = await fetch(`/api/boq/${currentBoqId}/snapshots`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label }),
   });
-  if (!r.ok) { alert("No se pudo congelar la versión."); return; }
+  if (!r.ok) { await showAlert("No se pudo congelar la versión.", "Error"); return; }
   await loadSnapshots();
 }
 async function compareWithSnapshot(id: string) {
@@ -206,6 +357,37 @@ async function compareWithSnapshot(id: string) {
 function backToSnapshotList() { snapshotCompareId = ""; render(); }
 function closeVersiones() { snapshotMode = false; render(); }
 
+// ---- QTO sobre planos PDF (medición → partidas) ----
+// La vista vive en web/qto.ts; aquí solo construimos el puente al estado del editor.
+function buildQtoContext(): QtoContext {
+  return {
+    getSelectedId: () => selectedId,
+    getGroups: () =>
+      tree.ordered(items)
+        .map((o) => o.item)
+        .filter((it) => it.nodeType === "group")
+        .map((g) => ({ id: g.id, label: `${g.code?.trim() ? g.code.trim() + " · " : ""}${g.description?.trim() || "(sin nombre)"}` })),
+    addLineUnder: (parentId, fields) => {
+      const id = uid();
+      items = tree.addLine(items, boq.id, parentId, id);
+      const it = items.find((i) => i.id === id);
+      if (it) Object.assign(it, fields);
+      return id;
+    },
+    updateLine: (id, patch) => {
+      const it = items.find((i) => i.id === id);
+      if (it) Object.assign(it, patch);
+    },
+    isLine: (id) => items.find((i) => i.id === id)?.nodeType === "line",
+    markDirty: () => markDirty(),
+    backToEditor: () => render(),
+    showAlert: (msg, title) => showAlert(msg, title),
+    showConfirm: (msg, opts) => showConfirm(msg, opts),
+    showPrompt: (lbl, def, title) => showPrompt(lbl, def, title),
+  };
+}
+function openQto() { openQtoView(buildQtoContext()); }
+
 function fmtDate(iso: string): string {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? iso : d.toLocaleString("es-DO", { dateStyle: "medium", timeStyle: "short" });
@@ -216,10 +398,9 @@ let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
   dirty = s === "dirty";
   if (!statusEl) return;
-  const map = { saved: ["Guardado ✓", "#0f9d58"], dirty: ["Sin guardar", "#b8860b"], saving: ["Guardando…", "#6b7785"], error: ["Error al guardar", "#b00"] } as const;
-  const [txt, color] = map[s];
-  statusEl.textContent = txt;
-  statusEl.style.color = color;
+  const labels = { saved: "Guardado ✓", dirty: "Sin guardar", saving: "Guardando…", error: "Error al guardar" } as const;
+  statusEl.textContent = labels[s];
+  statusEl.dataset.status = s;
 }
 function markDirty() { setStatus("dirty"); }
 
@@ -337,6 +518,8 @@ function removeItem(id: string) {
 const amountCells = new Map<string, HTMLElement>();
 const markupAmountCells = new Map<string, HTMLElement>();
 let subtotalEl: HTMLElement, totalEl: HTMLElement, validationEl: HTMLElement;
+let m2DirectEl: HTMLElement | null = null, m2TotalEl: HTMLElement | null = null;
+let summaryEl: HTMLElement | null = null;
 
 function recompute() {
   const r = recalculate(boq, items, markups);
@@ -347,7 +530,72 @@ function recompute() {
     if (el) el.textContent = fmt(mr.amount);
   }
   totalEl.textContent = fmt(r.total);
+  const cpa = costPerArea(r, boq.builtArea, boq.roundingDecimals ?? 2);
+  if (m2DirectEl) m2DirectEl.textContent = cpa ? `${fmt(cpa.directPerM2)}/m²` : "—";
+  if (m2TotalEl) m2TotalEl.textContent = cpa ? `${fmt(cpa.totalPerM2)}/m²` : "—";
+  renderSummary(r.amounts);
   renderValidation();
+}
+
+// §04 — Resumen por capítulo con barras de proporción (sobre el subtotal de capítulos).
+// recompute() corre en cada tecla; para no rehacer el DOM ni recorrer el árbol cada vez,
+// las filas se construyen una vez por render() y luego solo se parchean los valores. Los
+// cambios estructurales (alta/baja/indent…) pasan por render(), que crea un summaryEl nuevo
+// e invalida la caché por identidad del contenedor.
+interface SummaryRow { id: string; item: BoqItem; code: HTMLElement; name: HTMLElement; fill: HTMLElement; pct: HTMLElement; amt: HTMLElement; }
+let summaryRows: SummaryRow[] | null = null;
+let summaryOwner: HTMLElement | null = null;
+
+function renderSummary(amounts: Record<string, number>) {
+  if (!summaryEl) return;
+  if (summaryRows && summaryOwner === summaryEl) patchSummary(amounts);
+  else buildSummary(amounts);
+}
+
+function buildSummary(amounts: Record<string, number>) {
+  if (!summaryEl) return;
+  summaryEl.innerHTML = "";
+  summaryRows = null;
+  summaryOwner = summaryEl;
+  const chapters = ordered()
+    .filter((o) => o.depth === 0 && o.item.nodeType === "group")
+    .map((o) => o.item);
+  if (chapters.length === 0) {
+    const e = document.createElement("div"); e.className = "summary-empty";
+    e.textContent = "Añade un capítulo para ver el desglose por proporción.";
+    summaryEl.appendChild(e);
+    return;
+  }
+  const rows: SummaryRow[] = [];
+  for (const item of chapters) {
+    const row = document.createElement("div");
+    row.className = "summary-row";
+    const code = document.createElement("span"); code.className = "s-code";
+    const name = document.createElement("span"); name.className = "s-name";
+    const bar = document.createElement("span"); bar.className = "s-bar";
+    const fill = document.createElement("i"); bar.appendChild(fill);
+    const pctEl = document.createElement("span"); pctEl.className = "s-pct";
+    const amt = document.createElement("span"); amt.className = "s-amt";
+    row.append(code, name, bar, pctEl, amt);
+    summaryEl.appendChild(row);
+    rows.push({ id: item.id, item, code, name, fill, pct: pctEl, amt });
+  }
+  summaryRows = rows;
+  patchSummary(amounts);
+}
+
+function patchSummary(amounts: Record<string, number>) {
+  if (!summaryRows) return;
+  const denom = summaryRows.reduce((s, r) => s + Math.max(0, amounts[r.id] ?? 0), 0) || 1;
+  for (const r of summaryRows) {
+    const amount = amounts[r.id] ?? 0;
+    const pct = Math.max(0, (amount / denom) * 100);
+    r.code.textContent = r.item.code ?? "";
+    r.name.textContent = r.item.description || "—";
+    r.fill.style.width = `${pct.toFixed(1)}%`;
+    r.pct.textContent = `${Math.round(pct)}%`;
+    r.amt.textContent = fmt(amount);
+  }
 }
 
 function renderValidation() {
@@ -363,8 +611,8 @@ function renderValidation() {
   title.textContent = "Validación";
   const badge = document.createElement("span");
   badge.className = "val-badge";
-  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.style.color = "#0f9d58"; }
-  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.style.color = errs > 0 ? "#d11" : "#b8860b"; }
+  if (issues.length === 0) { badge.textContent = "✓ Sin problemas"; badge.style.color = "var(--ok)"; }
+  else { badge.textContent = `${errs} error(es) · ${warns} aviso(s)`; badge.style.color = errs > 0 ? "var(--error)" : "var(--warn)"; }
   head.append(title, badge);
   validationEl.appendChild(head);
 
@@ -376,7 +624,8 @@ function renderValidation() {
       const row = document.createElement("div");
       row.className = `val-item ${is.severity}`;
       const ref = it ? (it.code?.trim() || it.description?.trim() || "—") : "";
-      row.innerHTML = `<span class="dot"></span><span class="msg">${is.message}</span><span class="ref">${ref}</span>`;
+      const sev = is.severity === "error" ? "Error" : "Aviso";
+      row.innerHTML = `<span class="dot" aria-hidden="true"></span><span class="sr-only">${sev}:</span><span class="msg">${is.message}</span><span class="ref">${ref}</span>`;
       if (is.itemId) {
         row.addEventListener("click", () => { selectRow(is.itemId!); focusCell(is.itemId!, "description"); });
       }
@@ -583,6 +832,7 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
 
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr>
+    <th style="width:28px" aria-label="Estado"></th>
     <th style="width:90px">Código</th><th>Descripción</th>
     <th class="num" style="width:150px">${L.a}</th><th class="num" style="width:150px">${L.b}</th>
     <th class="num" style="width:170px">Δ (${L.b} − ${L.a})</th>
@@ -591,10 +841,16 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
   for (const r of d.rows) {
     const tr = document.createElement("tr");
     const dpos = (r.deltaAmount ?? 0) > 0, dneg = (r.deltaAmount ?? 0) < 0;
-    const tag = r.side === "onlyA" ? ` <span class="badge a">${L.badgeA}</span>` : r.side === "onlyB" ? ` <span class="badge b">${L.badgeB}</span>` : "";
+    // §05: símbolo primero (el ojo escanea símbolo antes que color); color como refuerzo.
+    const changed = r.side === "both" && (r.deltaAmount ?? 0) !== 0;
+    const sym = r.side === "onlyB" ? "+" : r.side === "onlyA" ? "−" : changed ? "~" : "·";
+    const symCls = r.side === "onlyB" ? "add" : r.side === "onlyA" ? "remove" : changed ? "mod" : "same";
+    const rowCls = r.side === "onlyB" ? "row-add" : r.side === "onlyA" ? "row-remove" : changed ? "row-mod" : "";
+    if (rowCls) tr.className = rowCls;
     tr.innerHTML = `
+      <td class="diff-sym ${symCls}">${sym}</td>
       <td class="code"><div class="cellpad">${r.code ?? ""}</div></td>
-      <td><div class="cellpad">${r.description}${tag}</div></td>
+      <td><div class="cellpad">${r.description}</div></td>
       <td class="num"><div class="cellpad">${fA(r.amountA)}</div></td>
       <td class="num"><div class="cellpad">${fA(r.amountB)}</div></td>
       <td class="num ${dpos ? "delta-up" : dneg ? "delta-down" : ""}"><div class="cellpad">${fmtDelta(r.deltaAmount, r.deltaPct)}</div></td>`;
@@ -714,7 +970,10 @@ function render() {
   const newBtn = button("+ Nuevo", () => newBudget(), "icon");
   const status = document.createElement("span");
   status.className = "sub"; status.id = "status"; status.style.marginLeft = "auto";
-  header.append(h1, sel, newBtn, status);
+  const themeBtn = button(currentTheme() === "light" ? "🌙" : "☀", () => toggleTheme(), "theme-toggle");
+  themeBtn.title = "Cambiar tema claro / oscuro";
+  themeBtn.setAttribute("aria-label", "Cambiar tema claro u oscuro");
+  header.append(h1, sel, newBtn, status, themeBtn);
   app.appendChild(header);
   statusEl = status;
 
@@ -731,6 +990,7 @@ function render() {
     button("⬆ Importar", () => importExcel()),
     button("⇄ Comparar", () => openCompare()),
     button("🔖 Versiones", () => openVersiones()),
+    button("📐 QTO", () => openQto()),
   );
   wrap.appendChild(toolbar);
 
@@ -845,12 +1105,33 @@ function render() {
   mkPanel.appendChild(mkTable);
   wrap.appendChild(mkPanel);
 
+  // §04 — Resumen por capítulo (barras de proporción). Se llena en recompute().
+  summaryEl = document.createElement("div");
+  summaryEl.className = "summary";
+  wrap.appendChild(summaryEl);
+
   const totals = document.createElement("div");
   totals.className = "totals";
   totals.innerHTML = `
     <div class="row sub"><span>Subtotal</span><span class="v" id="t-sub"></span></div>
-    <div class="row total"><span>Total (con markups)</span><span class="v" id="t-total"></span></div>`;
+    <div class="row total"><span>Total (con markups)</span><span class="v" id="t-total"></span></div>
+    <div class="row area">
+      <label for="t-area">Área construida</label>
+      <span class="v"><input id="t-area" class="area-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="—"> m²</span>
+    </div>
+    <div class="row m2"><span>Costo directo / m²</span><span class="v" id="t-m2-direct"></span></div>
+    <div class="row m2"><span>Costo / m² (con markups)</span><span class="v" id="t-m2-total"></span></div>`;
   wrap.appendChild(totals);
+  const areaInput = totals.querySelector<HTMLInputElement>("#t-area")!;
+  if (boq.builtArea != null && boq.builtArea > 0) areaInput.value = String(boq.builtArea);
+  areaInput.addEventListener("input", () => {
+    const v = parseFloat(areaInput.value);
+    boq.builtArea = Number.isFinite(v) && v > 0 ? v : null;
+    markDirty();
+    recompute();
+  });
+  m2DirectEl = totals.querySelector("#t-m2-direct");
+  m2TotalEl = totals.querySelector("#t-m2-total");
 
   // Panel de validación
   validationEl = document.createElement("div");
@@ -869,6 +1150,16 @@ function render() {
   setStatus(dirty ? "dirty" : "saved");
 }
 
+// ---- Tema claro/oscuro (default dark; preferencia en localStorage) ----
+function currentTheme(): "dark" | "light" {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+function toggleTheme() {
+  const next = currentTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("costto-theme", next); } catch { /* sin localStorage: solo sesión */ }
+  render();
+}
 function button(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
   const b = document.createElement("button");
   b.textContent = label;
