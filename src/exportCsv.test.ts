@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCsv, writeBoqCsv } from "./exportCsv.js";
+import { buildCsv, writeBoqCsv, wbsCodes } from "./exportCsv.js";
+import { orderedItems } from "./export.js";
 import { recalculate } from "./calc.js";
 import { createDb } from "./db/client.js";
 import { createProject, createBoq, insertItems } from "./repo.js";
@@ -27,17 +28,24 @@ describe("exportCsv — buildCsv", () => {
 
   it("Nivel de esquema = 1 para el capítulo y 2 para sus partidas (contiguo para MS Project)", () => {
     const rows = lines(buildCsv(boq, items, recalculate(boq, items)));
-    expect(rows[1]!.startsWith("1,01,Movimiento de tierra")).toBe(true);
-    expect(rows[2]!.startsWith("2,01.01,Excavación")).toBe(true);
+    expect(rows[1]!.startsWith("1,1,Movimiento de tierra")).toBe(true);
+    expect(rows[2]!.startsWith("2,1.1,Excavación")).toBe(true);
+  });
+
+  it("la columna EDT trae el WBS jerárquico calculado (1, 1.1, 1.2), no el código libre", () => {
+    const rows = lines(buildCsv(boq, items, recalculate(boq, items)));
+    expect(rows[1]!.split(",")[1]).toBe("1"); // capítulo
+    expect(rows[2]!.split(",")[1]).toBe("1.1"); // primera partida
+    expect(rows[3]!.split(",")[1]).toBe("1.2"); // segunda partida
   });
 
   it("el capítulo deja cantidad/precio/costo en blanco; la partida los trae con Costo = importe", () => {
     const calc = recalculate(boq, items);
     const rows = lines(buildCsv(boq, items, calc));
-    // capítulo: 1,01,Movimiento de tierra,,, → termina en comas vacías
-    expect(rows[1]).toBe("1,01,Movimiento de tierra,,,,");
+    // capítulo: 1,1,Movimiento de tierra,,, → termina en comas vacías
+    expect(rows[1]).toBe("1,1,Movimiento de tierra,,,,");
     // partida l1: Costo = 100 × 350 = 35000
-    expect(rows[2]).toBe(`2,01.01,Excavación,m³,100,350,${calc.amounts.l1}`);
+    expect(rows[2]).toBe(`2,1.1,Excavación,m³,100,350,${calc.amounts.l1}`);
     expect(calc.amounts.l1).toBe(35000);
   });
 
@@ -50,6 +58,31 @@ describe("exportCsv — buildCsv", () => {
   it("conserva los acentos verbatim", () => {
     const csv = buildCsv(boq, items, recalculate(boq, items));
     expect(csv).toContain("Excavación");
+  });
+});
+
+describe("exportCsv — wbsCodes", () => {
+  it("numera capítulos y subniveles y reinicia el contador al cambiar de rama", () => {
+    // Árbol: 1 (c1) → 1.1 (l1), 1.2 (g2) → 1.2.1 (l3); 2 (c2) → 2.1 (l4)
+    const tree: BoqItem[] = [
+      { id: "c1", boqId: "b", parentId: null, sortOrder: 1, description: "Cap 1", nodeType: "group" },
+      { id: "l1", boqId: "b", parentId: "c1", sortOrder: 1, description: "P 1.1", nodeType: "line" },
+      { id: "g2", boqId: "b", parentId: "c1", sortOrder: 2, description: "Sub 1.2", nodeType: "group" },
+      { id: "l3", boqId: "b", parentId: "g2", sortOrder: 1, description: "P 1.2.1", nodeType: "line" },
+      { id: "c2", boqId: "b", parentId: null, sortOrder: 2, description: "Cap 2", nodeType: "group" },
+      { id: "l4", boqId: "b", parentId: "c2", sortOrder: 1, description: "P 2.1", nodeType: "line" },
+    ];
+    const wbs = wbsCodes(orderedItems(tree));
+    expect(wbs.get("c1")).toBe("1");
+    expect(wbs.get("l1")).toBe("1.1");
+    expect(wbs.get("g2")).toBe("1.2");
+    expect(wbs.get("l3")).toBe("1.2.1");
+    expect(wbs.get("c2")).toBe("2"); // contador raíz avanza, los profundos se reinician
+    expect(wbs.get("l4")).toBe("2.1");
+  });
+
+  it("BOQ vacío produce un mapa vacío", () => {
+    expect(wbsCodes(orderedItems([])).size).toBe(0);
   });
 });
 

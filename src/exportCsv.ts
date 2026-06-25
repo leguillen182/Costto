@@ -23,16 +23,32 @@ function csvField(value: string | number | null | undefined): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/** Calcula el EDT/WBS jerárquico (1, 1.1, 1.2, 2…) a partir del recorrido DFS.
+ *  Cada nivel lleva un contador que se reinicia al salir de su subárbol, de modo
+ *  que el código refleja la posición real del ítem y coincide con MS Project. */
+export function wbsCodes(ordered: { item: BoqItem; depth: number }[]): Map<string, string> {
+  const counters: number[] = [];
+  const map = new Map<string, string>();
+  for (const { item, depth } of ordered) {
+    counters.length = depth + 1; // descarta los contadores de niveles más profundos
+    counters[depth] = (counters[depth] ?? 0) + 1;
+    map.set(item.id, counters.slice(0, depth + 1).join("."));
+  }
+  return map;
+}
+
 /** Genera el texto CSV completo (con BOM) de un BOQ ya calculado. */
 export function buildCsv(boq: Boq, items: BoqItem[], calc: BoqCalcResult): string {
+  const ordered = orderedItems(items);
+  const wbs = wbsCodes(ordered);
   const lines = [HEADERS.map(csvField).join(",")];
-  for (const { item, depth } of orderedItems(items)) {
+  for (const { item, depth } of ordered) {
     const isGroup = item.nodeType === "group";
     // Los capítulos (tareas resumen) dejan cantidad/precio/costo en blanco: MS Project
     // calcula el rollup automáticamente y así no se duplican los totales.
     const row = [
       depth + 1, // Nivel de esquema (1 = capítulo raíz)
-      item.code ?? "",
+      wbs.get(item.id) ?? "", // EDT/WBS jerárquico calculado (no el código libre del usuario)
       item.description ?? "",
       isGroup ? "" : item.unit ?? "",
       isGroup ? "" : item.quantity ?? "",
