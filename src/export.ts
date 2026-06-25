@@ -3,7 +3,7 @@ import ExcelJS from "exceljs";
 import type { Boq, BoqItem, BoqCalcResult } from "./types.js";
 import { costPerArea } from "./calc.js";
 
-function orderedItems(items: BoqItem[]): { item: BoqItem; depth: number }[] {
+export function orderedItems(items: BoqItem[]): { item: BoqItem; depth: number }[] {
   const byParent = new Map<string | null, BoqItem[]>();
   for (const it of items) {
     const arr = byParent.get(it.parentId);

@@ -26,6 +26,7 @@ import { parseWorkbook } from "./import.js";
 import { compareBoqs } from "./compare.js";
 import { buildSnapshot, snapshotToCompareInputs, toSummary } from "./snapshot.js";
 import { backupDb } from "./backup.js";
+import { writeBoqCsv } from "./exportCsv.js";
 import type { BoqItem, MarkupRule } from "./types.js";
 
 // Error con código HTTP para distinguir 4xx (cliente) de 5xx (interno) en el catch global.
@@ -84,6 +85,12 @@ function json(res: import("node:http").ServerResponse, code: number, body: unkno
 // `onMutate` se invoca tras cada operación que persiste cambios (guardar/importar/congelar);
 // el arranque lo usa para respaldar el data.db. En tests se omite (no-op).
 export function createApp(db: AppDb, onMutate: () => void = () => {}) {
+  // Sidecar CSV (compatible con MS Project) tras cada guardado/importación.
+  // Un fallo de escritura nunca debe romper la respuesta del guardado.
+  const writeCsvSidecar = (id: string) => {
+    try { writeBoqCsv(db, id, "exports"); }
+    catch (e) { console.error("CSV sidecar falló:", e); }
+  };
   return createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -141,6 +148,7 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       const markups = getMarkups(db, id); // preservar markups existentes
       saveBoqContents(db, id, items, markups);
       onMutate();
+      writeCsvSidecar(id);
       return json(res, 200, { ok: true, rowsRead, flat, calc: calcBoq(db, id) });
     }
 
@@ -215,6 +223,7 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
         updateBoqBuiltArea(db, id, typeof a === "number" && a > 0 ? a : null);
       }
       onMutate();
+      writeCsvSidecar(id);
       return json(res, 200, { ok: true, calc: calcBoq(db, id) });
     }
 

@@ -5,4 +5,5 @@ dist-web/
 *.db-shm
 *.db-wal
 backups/
+exports/
 .DS_Store
