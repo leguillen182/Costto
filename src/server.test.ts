@@ -107,4 +107,13 @@ describe("server — endpoints HTTP", () => {
     const get = await fetch(`${base}/api/boq/b1`);
     expect((await get.json()).boq.builtArea).toBeNull();
   });
+
+  it("PUT con builtArea no numérica responde 400 (F4)", async () => {
+    const put = await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [], markups: [], builtArea: "850" }),
+    });
+    expect(put.status).toBe(400);
+  });
 });

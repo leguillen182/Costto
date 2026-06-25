@@ -4,6 +4,7 @@ import { recalculate, componentSum, costPerArea } from "../src/calc";
 import { validate } from "../src/validate";
 import * as tree from "../src/tree";
 import { openQtoView, type QtoContext } from "./qto.js";
+import { button } from "./dom.js";
 import type { Boq, BoqItem, MarkupRule } from "../src/types";
 
 const uid = () => crypto.randomUUID();
@@ -1191,6 +1192,11 @@ function render() {
     markDirty();
     recompute();
   });
+  // Al salir del campo, reconcilia el texto con el valor guardado: '0'/'-5'/'' → campo vacío
+  // (evita mostrar un número que el sistema trata como "sin área", con el costo/m² en "—").
+  areaInput.addEventListener("change", () => {
+    areaInput.value = boq.builtArea != null ? String(boq.builtArea) : "";
+  });
   m2DirectEl = totals.querySelector("#t-m2-direct");
   m2TotalEl = totals.querySelector("#t-m2-total");
 
@@ -1220,13 +1226,6 @@ function toggleTheme() {
   document.documentElement.setAttribute("data-theme", next);
   try { localStorage.setItem("costto-theme", next); } catch { /* sin localStorage: solo sesión */ }
   render();
-}
-function button(label: string, onClick: () => void, cls = ""): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.textContent = label;
-  if (cls) b.className = cls;
-  b.addEventListener("click", onClick);
-  return b;
 }
 function td(cls = ""): HTMLTableCellElement {
   const c = document.createElement("td");
