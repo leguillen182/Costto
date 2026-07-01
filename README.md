@@ -45,10 +45,16 @@ Fase 1 (estimador) — **Hito 5 "apto para uso real" cerrado**. Hecho:
 - Validación (A1) · multi-proyecto en la UI (F1) · comparar 2 presupuestos (B2).
 - Versiones/snapshots: congelar "Rev.0 aprobado" + comparar vivo vs Rev.0 (F3).
 - Costo por m² construido (F4): área en el BOQ + costo directo y total /m² (UI + Excel).
-- QTO sobre planos PDF (MVP): visor pdf.js + calibrar escala + medir longitud/área/conteo → partidas
-  (nueva o rellenar la seleccionada). Solo sesión; las cantidades se persisten como partidas.
-  Pulido: imán a vértices + orto-lock (Shift) + Backspace; pan (espacio/arrastrar) + zoom con rueda al
-  cursor; calibrar por escala escrita 1:n y unidades configurables (m/cm/ft). Fase 2: IFC vía web-ifc.
+- QTO sobre planos PDF: visor pdf.js + calibrar escala + medir longitud/área/conteo → partidas
+  (nueva o rellenar la seleccionada). Pulido: imán a vértices + orto-lock (Shift) + Backspace;
+  pan (espacio/arrastrar) + zoom con rueda al cursor; calibrar por escala escrita 1:n y unidades
+  configurables (m/cm/ft). Fase 2: IFC vía web-ifc.
+- Persistencia QTO (F10): mediciones + escalas guardadas por (presupuesto, documento) y
+  restauradas al recargar el mismo plano; cada medición enlaza la partida que alimentó
+  (trazabilidad) y recalibrar recalcula cantidades y partidas enlazadas.
+- Deshacer/rehacer en el editor (F8): ⌘Z / ⇧⌘Z con coalescing de tecleo por celda.
+- Catálogo de precios unitarios (F9): partidas maestras reutilizables; búsqueda + insertar en el
+  presupuesto; volcado desde un BOQ (upsert por código).
 - Backup automático del `data.db` en cada guardado, 3 rotando (F7).
 - Tests del editor (C2): lógica de árbol extraída a `tree.ts` + tests jsdom del front.
 - Refinamiento UI estilo Apple HIG: foco visible, diálogo modal `<dialog>` (sin alert/confirm/prompt), tokens de color, a11y.

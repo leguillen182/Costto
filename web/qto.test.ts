@@ -19,6 +19,7 @@ let n: number;
 
 function makeCtx(): QtoContext {
   return {
+    getBoqId: () => "b1",
     getSelectedId: () => selectedId,
     getGroups: () => items.filter((i) => i.nodeType === "group").map((g) => ({ id: g.id, label: g.description })),
     addLineUnder: (parentId, fields) => {

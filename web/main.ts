@@ -631,6 +631,7 @@ function fillCatalogTbody() {
 // La vista vive en web/qto.ts; aquí solo construimos el puente al estado del editor.
 function buildQtoContext(): QtoContext {
   return {
+    getBoqId: () => currentBoqId,
     getSelectedId: () => selectedId,
     getGroups: () =>
       tree.ordered(items)

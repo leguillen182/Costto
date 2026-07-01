@@ -12,6 +12,7 @@ import { button as btn } from "./dom.js";
 
 // ---- contrato de integración con el editor (lo construye main.ts cerrando sobre sus vars) ----
 export interface QtoContext {
+  getBoqId(): string;
   getSelectedId(): string | null;
   getGroups(): { id: string; label: string }[];
   addLineUnder(parentId: string | null, fields: Partial<BoqItem>): string;
@@ -36,6 +37,7 @@ export interface Measurement {
   label: string;    // descripción editable para "nueva partida"
   color: string;    // color del overlay (brocha activa al confirmar)
   sent?: boolean;    // ya volcada al presupuesto
+  itemId?: string;   // partida del BOQ que recibió esta cantidad (trazabilidad F10)
 }
 
 // Subconjunto del PageViewport de pdfjs que realmente usamos (evita acoplarnos a sus tipos).
@@ -70,17 +72,17 @@ export function sendMeasurementAsNewLine(
   return id;
 }
 
-/** Rellena cantidad/unidad de la línea seleccionada. Devuelve por qué no se pudo, si aplica. */
+/** Rellena cantidad/unidad de la línea seleccionada. Devuelve el id (para enlazar la medición). */
 export function sendMeasurementToSelected(
   ctx: QtoContext,
   m: Measurement,
-): { ok: boolean; reason?: "no-selection" | "not-line" } {
+): { ok: boolean; reason?: "no-selection" | "not-line"; id?: string } {
   const sel = ctx.getSelectedId();
   if (!sel) return { ok: false, reason: "no-selection" };
   if (!ctx.isLine(sel)) return { ok: false, reason: "not-line" };
   ctx.updateLine(sel, { quantity: m.quantity, unit: m.unit });
   ctx.markDirty();
-  return { ok: true };
+  return { ok: true, id: sel };
 }
 
 export function roundQ(kind: MeasureKind, q: number): number {
@@ -109,6 +111,11 @@ const ROTATION = 0; // MVP: sin rotación
 
 const scaleByPage = new Map<number, PageScale>();
 let measurements: Measurement[] = [];
+// Persistencia (F10): las mediciones y escalas se guardan por (BOQ, nombre del documento)
+// y se restauran al volver a cargar el mismo plano.
+let docName: string | null = null;
+let qtoSaveTimer = 0;
+let qtoSaveFailed = false;
 let tool: Tool | null = null;
 let draft: Pt[] = [];
 let cursor: Pt | null = null; // posición del ratón en espacio PDF (rubber-band)
@@ -158,6 +165,7 @@ export function openQtoView(c: QtoContext): void {
   snapActive = false; spaceDown = false; panMode = false; panning = false; suppressClick = false;
   pendingZoom = 1.0; zoomAnchor = null;
   toolBtns = {}; handBtn = null;
+  docName = null; qtoSaveFailed = false; window.clearTimeout(qtoSaveTimer);
   renderView();
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
@@ -165,6 +173,7 @@ export function openQtoView(c: QtoContext): void {
 
 function leave(): void {
   active = false;
+  void flushQtoSave(); // no perder un guardado debounced pendiente al salir
   window.removeEventListener("keydown", onKeyDown);
   window.removeEventListener("keyup", onKeyUp);
   if (currentRenderTask) { currentRenderTask.cancel(); currentRenderTask = null; }
@@ -333,12 +342,59 @@ async function loadPdf(file: File): Promise<void> {
     // Igual que gotoPage: un trazo a medias del documento anterior no debe
     // sobrevivir al cambio de PDF (sus coordenadas pertenecen al plano viejo).
     draft = []; cursor = null; snapActive = false; forceNewCount = false;
+    docName = file.name;
+    await restoreQtoSheet(); // mediciones/escalas guardadas de este plano en este BOQ
     placeholder.style.display = "none";
     await renderPage();
     await fitWidth(); // abre el plano ajustado al ancho del visor (no al 100% descuadrado)
     renderList();
   } catch (e) {
     await ctx?.showAlert(`No se pudo abrir el PDF: ${e}`, "Error");
+  }
+}
+
+// ---- persistencia de la hoja QTO (F10) ----
+async function restoreQtoSheet(): Promise<void> {
+  if (!ctx || !docName) return;
+  try {
+    const r = await fetch(`/api/boq/${ctx.getBoqId()}/qto?doc=${encodeURIComponent(docName)}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (Array.isArray(d.measurements)) measurements = d.measurements as Measurement[];
+    for (const [p, s] of Object.entries(d.scales ?? {})) {
+      const scale = s as PageScale;
+      if (scale && typeof scale.unitsPerPdf === "number") scaleByPage.set(Number(p), scale);
+    }
+  } catch {
+    // sin backend no hay persistencia: la sesión sigue funcionando en memoria
+  }
+}
+
+/** Guarda la hoja (debounced): cada mutación de mediciones/escala programa un PUT. */
+function persistQto(): void {
+  if (!docName) return;
+  window.clearTimeout(qtoSaveTimer);
+  qtoSaveTimer = window.setTimeout(() => void flushQtoSave(), 400);
+}
+
+async function flushQtoSave(): Promise<void> {
+  if (!ctx || !docName) return;
+  window.clearTimeout(qtoSaveTimer);
+  const scales: Record<string, PageScale> = {};
+  for (const [p, s] of scaleByPage) scales[String(p)] = s;
+  try {
+    const r = await fetch(`/api/boq/${ctx.getBoqId()}/qto`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: docName, measurements, scales }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    qtoSaveFailed = false;
+  } catch {
+    if (!qtoSaveFailed) {
+      qtoSaveFailed = true; // avisar una sola vez; los cambios siguientes reintentan
+      void ctx.showAlert("No se pudieron guardar las mediciones en el servidor. Se reintentará con el próximo cambio.", "QTO");
+    }
   }
 }
 
@@ -664,14 +720,37 @@ function setTool(t: Tool): void {
   redrawOverlay();
 }
 
-// Las cantidades se congelan al medir: recalibrar NO recalcula lo ya medido.
-// Si la página ya tiene mediciones escaladas, avisar para que el usuario las rehaga.
-async function warnStaleMeasurements(): Promise<void> {
-  const stale = measurements.some((m) => m.page === pageNum && m.kind !== "count");
-  if (stale) {
+// Al recalibrar, la geometría persiste (F10): se RECALCULAN las cantidades de las
+// mediciones de la página con la escala nueva, y las partidas enlazadas se actualizan.
+function recalcPageMeasurements(): { recalced: number; linked: number } {
+  const scale = scaleByPage.get(pageNum);
+  if (!scale) return { recalced: 0, linked: 0 };
+  let recalced = 0;
+  let linked = 0;
+  for (const m of measurements) {
+    if (m.page !== pageNum || m.kind === "count") continue;
+    const r = deriveQuantity(m.kind, scale, { points: m.points });
+    m.quantity = roundQ(m.kind, r.quantity);
+    m.unit = r.unit;
+    recalced++;
+    if (m.itemId && ctx!.isLine(m.itemId)) {
+      ctx!.updateLine(m.itemId, { quantity: m.quantity, unit: m.unit });
+      linked++;
+    }
+  }
+  if (linked) ctx!.markDirty();
+  return { recalced, linked };
+}
+
+async function afterRecalibrate(): Promise<void> {
+  const { recalced, linked } = recalcPageMeasurements();
+  renderList();
+  persistQto();
+  if (recalced) {
     await ctx?.showAlert(
-      "Esta página ya tenía mediciones: sus cantidades se calcularon con la escala anterior y NO se recalculan. Bórralas y mídelas de nuevo si la calibración vieja era incorrecta.",
-      "Escala actualizada",
+      `Escala actualizada: ${recalced} medición(es) de esta página recalculada(s)` +
+        (linked ? ` y ${linked} partida(s) del presupuesto actualizada(s) (guarda con ⌘S).` : "."),
+      "Calibrar",
     );
   }
 }
@@ -685,7 +764,7 @@ async function finishCalibration(): Promise<void> {
     const unitsPerPdf = calibrationFactor(a, b, ans);
     scaleByPage.set(pageNum, { unitsPerPdf, realUnit });
     tool = "longitud";
-    await warnStaleMeasurements();
+    await afterRecalibrate();
   } catch (err) {
     await ctx?.showAlert(`Calibración inválida: ${err}`, "Calibrar");
   }
@@ -712,7 +791,7 @@ async function calibrateByRatio(): Promise<void> {
     await ctx!.showAlert(`Escala inválida: ${err}`, "Calibrar");
     return;
   }
-  await warnStaleMeasurements();
+  await afterRecalibrate();
   refreshChrome();
   redrawOverlay();
 }
@@ -740,6 +819,7 @@ function addCountMarker(p: Pt): void {
   m.quantity = m.points.length;
   redrawOverlay();
   renderList();
+  persistQto();
 }
 
 function finishDraft(): void {
@@ -766,6 +846,7 @@ function finishDraft(): void {
     draft = []; cursor = null;
     redrawOverlay();
     renderList();
+    persistQto();
   } catch (err) {
     ctx?.showAlert(`${err}`, "Medir");
   }
@@ -842,7 +923,7 @@ function buildRow(m: Measurement, groups: { id: string; label: string }[]): QtoR
   const lbl = document.createElement("input");
   lbl.className = "qto-label";
   lbl.value = m.label;
-  lbl.addEventListener("input", () => (m.label = lbl.value));
+  lbl.addEventListener("input", () => { m.label = lbl.value; persistQto(); });
 
   const qty = document.createElement("span");
   qty.className = "qto-qty";
@@ -860,9 +941,10 @@ function buildRow(m: Measurement, groups: { id: string; label: string }[]): QtoR
 
   const newBtn = btn("+ partida", async () => {
     if (m.sent) return; // ya enviada: no duplicar la partida
-    sendMeasurementAsNewLine(ctx!, m, sel.value || null, lbl.value);
+    m.itemId = sendMeasurementAsNewLine(ctx!, m, sel.value || null, lbl.value);
     m.sent = true;
     renderList();
+    persistQto();
     await ctx!.showAlert(`Partida creada: ${fmtQty(m)}.`, "QTO");
   }, "icon");
 
@@ -879,7 +961,9 @@ function buildRow(m: Measurement, groups: { id: string; label: string }[]): QtoR
       return;
     }
     m.sent = true;
+    m.itemId = res.id;
     renderList();
+    persistQto();
     await ctx!.showAlert(`Cantidad enviada a la partida seleccionada: ${fmtQty(m)}.`, "QTO");
   }, "icon");
 
@@ -887,6 +971,7 @@ function buildRow(m: Measurement, groups: { id: string; label: string }[]): QtoR
     measurements = measurements.filter((x) => x.id !== m.id);
     redrawOverlay();
     renderList();
+    persistQto();
   }, "icon del");
 
   row.append(swatch, icon, lbl, qty, sel, newBtn, selBtn, del);

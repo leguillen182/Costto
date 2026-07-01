@@ -1,6 +1,6 @@
 // Schema Drizzle (SQLite) — derivado de types.ts / DATA_MODEL.md.
 // Columnas en snake_case; propiedades en camelCase (mapeo automático de Drizzle).
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, primaryKey } from "drizzle-orm/sqlite-core";
 
 export const projects = sqliteTable("projects", {
   id: text("id").primaryKey(),
@@ -78,6 +78,20 @@ export const catalogItems = sqliteTable("catalog_items", {
   currency: text("currency"),
   updatedAt: text("updated_at").notNull(),
 });
+
+// Hojas QTO persistidas (F10): mediciones + escalas por (presupuesto, documento PDF).
+// El payload es el estado completo en JSON (misma estrategia que los snapshots);
+// el enlace medición→partida (itemId) da trazabilidad "¿de dónde salió esta cantidad?".
+export const qtoSheets = sqliteTable(
+  "qto_sheets",
+  {
+    boqId: text("boq_id").notNull(),
+    docName: text("doc_name").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    payload: text("payload").notNull(), // JSON: { measurements: [...], scales: { "1": {unitsPerPdf, realUnit} } }
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.boqId, t.docName] }) }),
+);
 
 // Versiones / snapshots congelados del presupuesto (F3). El payload guarda el
 // contenido completo (boq + items + markups) como JSON inmutable.

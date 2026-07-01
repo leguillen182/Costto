@@ -90,6 +90,13 @@ function migrate(sqlite: Database.Database): void {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_catalog_code ON catalog_items(code);
+    CREATE TABLE IF NOT EXISTS qto_sheets (
+      boq_id TEXT NOT NULL REFERENCES boqs(id),
+      doc_name TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (boq_id, doc_name)
+    );
     CREATE TABLE IF NOT EXISTS boq_snapshots (
       id TEXT PRIMARY KEY,
       boq_id TEXT NOT NULL REFERENCES boqs(id),

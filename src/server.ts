@@ -23,6 +23,8 @@ import {
   saveCatalogItem,
   deleteCatalogItem,
   upsertCatalogFromItems,
+  getQtoSheet,
+  saveQtoSheet,
 } from "./repo.js";
 import { randomUUID } from "node:crypto";
 import { buildWorkbook } from "./export.js";
@@ -257,6 +259,36 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       createSnapshot(db, snap);
       onMutate();
       return json(res, 201, { snapshot: toSummary(snap) });
+    }
+
+    // ---- Hojas QTO persistidas (F10): mediciones + escalas por (BOQ, documento) ----
+    const qto = url.pathname.match(/^\/api\/boq\/([^/]+)\/qto$/);
+    // GET /api/boq/:id/qto?doc=NOMBRE → estado guardado (o vacío si nunca se midió ese plano)
+    if (qto && req.method === "GET") {
+      const id = qto[1]!;
+      if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
+      const doc = url.searchParams.get("doc") ?? "";
+      if (!doc) return json(res, 400, { error: "falta el parámetro doc" });
+      const sheet = getQtoSheet(db, id, doc);
+      return json(res, 200, sheet ?? { measurements: [], scales: {} });
+    }
+    // PUT /api/boq/:id/qto  body { doc, measurements, scales } → reemplaza la hoja del documento
+    if (qto && req.method === "PUT") {
+      const id = qto[1]!;
+      if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
+      const body = parseBody<{ doc?: string; measurements?: unknown[]; scales?: Record<string, unknown> }>(await readBody(req));
+      if (typeof body.doc !== "string" || !body.doc.trim()) {
+        return json(res, 400, { error: "doc (nombre del documento) es obligatorio" });
+      }
+      if (body.measurements != null && !Array.isArray(body.measurements)) {
+        return json(res, 400, { error: "measurements debe ser un array" });
+      }
+      if (body.scales != null && (typeof body.scales !== "object" || Array.isArray(body.scales))) {
+        return json(res, 400, { error: "scales debe ser un objeto" });
+      }
+      saveQtoSheet(db, id, body.doc, { measurements: body.measurements ?? [], scales: body.scales ?? {} }, new Date().toISOString());
+      onMutate();
+      return json(res, 200, { ok: true });
     }
 
     // Comparar estado vivo contra un snapshot: GET /api/boq/:id/compare-snapshot?snapshot=SNAPID

@@ -216,6 +216,48 @@ describe("server — endpoints HTTP", () => {
     expect(r.status).toBe(400);
   });
 
+  it("ciclo QTO F10: PUT hoja → GET la restaura por (boq, documento)", async () => {
+    const sheet = {
+      doc: "plano-A1.pdf",
+      measurements: [
+        { id: "m1", kind: "area", page: 1, points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }], quantity: 24.5, unit: "m²", label: "Losa", color: "#2563eb", sent: true, itemId: "l1" },
+      ],
+      scales: { "1": { unitsPerPdf: 0.05, realUnit: "m" } },
+    };
+    const put = await fetch(`${base}/api/boq/b1/qto`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sheet),
+    });
+    expect(put.status).toBe(200);
+
+    const get = await fetch(`${base}/api/boq/b1/qto?doc=${encodeURIComponent("plano-A1.pdf")}`);
+    expect(get.status).toBe(200);
+    const d = await get.json();
+    expect(d.measurements).toHaveLength(1);
+    expect(d.measurements[0].itemId).toBe("l1"); // trazabilidad medición → partida
+    expect(d.scales["1"].unitsPerPdf).toBe(0.05);
+
+    // Otro documento del mismo BOQ empieza vacío.
+    const other = await (await fetch(`${base}/api/boq/b1/qto?doc=otro.pdf`)).json();
+    expect(other.measurements).toHaveLength(0);
+  });
+
+  it("PUT /api/boq/:id/qto sin doc o con measurements no-array responde 400", async () => {
+    const sinDoc = await fetch(`${base}/api/boq/b1/qto`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ measurements: [] }),
+    });
+    expect(sinDoc.status).toBe(400);
+    const malForma = await fetch(`${base}/api/boq/b1/qto`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: "x.pdf", measurements: "hola" }),
+    });
+    expect(malForma.status).toBe(400);
+  });
+
   it("POST snapshot con label no-string responde 400 (no 500)", async () => {
     const r = await fetch(`${base}/api/boq/b1/snapshots`, {
       method: "POST",

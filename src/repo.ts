@@ -1,9 +1,9 @@
 // Repositorio: persistencia de Project / Boq / BoqItem / MarkupRule en SQLite,
 // y puente al motor de cálculo (calcBoq carga desde DB y llama recalculate).
-import { eq, like, or } from "drizzle-orm";
+import { and, eq, like, or } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { AppDb } from "./db/client.js";
-import { projects, boqs, boqItems, markupRules, boqSnapshots, catalogItems } from "./db/schema.js";
+import { projects, boqs, boqItems, markupRules, boqSnapshots, catalogItems, qtoSheets } from "./db/schema.js";
 import type { BoqSnapshot, SnapshotSummary } from "./snapshot.js";
 import { recalculate } from "./calc.js";
 import type {
@@ -325,6 +325,38 @@ export function upsertCatalogFromItems(
     }
   });
   return { added, updated };
+}
+
+// ---------- Hojas QTO persistidas (F10) ----------
+// El payload viaja opaco (JSON del front): el backend solo lo guarda y devuelve.
+// Se valida la forma mínima en el server; la semántica vive en web/qto.ts.
+
+export interface QtoSheetPayload {
+  measurements: unknown[];
+  scales: Record<string, unknown>;
+}
+
+export function getQtoSheet(db: AppDb, boqId: string, docName: string): QtoSheetPayload | undefined {
+  const r = db
+    .select()
+    .from(qtoSheets)
+    .where(and(eq(qtoSheets.boqId, boqId), eq(qtoSheets.docName, docName)))
+    .get();
+  return r ? (JSON.parse(r.payload) as QtoSheetPayload) : undefined;
+}
+
+export function saveQtoSheet(
+  db: AppDb,
+  boqId: string,
+  docName: string,
+  payload: QtoSheetPayload,
+  updatedAt: string,
+): void {
+  const row = { boqId, docName, updatedAt, payload: JSON.stringify(payload) };
+  db.insert(qtoSheets)
+    .values(row)
+    .onConflictDoUpdate({ target: [qtoSheets.boqId, qtoSheets.docName], set: { updatedAt: row.updatedAt, payload: row.payload } })
+    .run();
 }
 
 // ---------- Snapshots / versiones (F3) ----------
