@@ -25,7 +25,7 @@ web/
 ├── main.ts         Editor keyboard-first (capa DOM; reusa calc.ts y tree.ts)
 └── qto.ts          Vista QTO: visor PDF (pdf.js) + medición sobre el plano → partidas
 ```
-**148 tests verdes** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
+**Suite de tests en verde** — `src/*.test.ts` corren en node; `web/*.test.ts` en jsdom.
 
 ## Comandos
 ```

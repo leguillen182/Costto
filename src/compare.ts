@@ -48,10 +48,22 @@ export function compareBoqs(boqA: Boq, itemsA: BoqItem[], boqB: Boq, itemsB: Boq
 
   const linesA = itemsA.filter((i) => i.boqId === boqA.id && i.nodeType === "line");
   const linesB = itemsB.filter((i) => i.boqId === boqB.id && i.nodeType === "line");
-  const mapA = new Map<string, BoqItem>();
-  for (const it of linesA) mapA.set(keyOf(it), it);
-  const mapB = new Map<string, BoqItem>();
-  for (const it of linesB) mapB.set(keyOf(it), it);
+  // Varias líneas pueden compartir clave (código duplicado, o misma descripción en
+  // capítulos distintos): se agregan sus importes para no perder partidas del total.
+  type Agg = { item: BoqItem; amount: number };
+  const aggregate = (lines: BoqItem[], amounts: Record<string, number>): Map<string, Agg> => {
+    const map = new Map<string, Agg>();
+    for (const it of lines) {
+      const k = keyOf(it);
+      const amount = amounts[it.id] ?? 0;
+      const prev = map.get(k);
+      if (prev) prev.amount += amount;
+      else map.set(k, { item: it, amount });
+    }
+    return map;
+  };
+  const mapA = aggregate(linesA, calcA.amounts);
+  const mapB = aggregate(linesB, calcB.amounts);
 
   const rows: CompareRow[] = [];
   let totalA = 0;
@@ -63,8 +75,8 @@ export function compareBoqs(boqA: Boq, itemsA: BoqItem[], boqB: Boq, itemsB: Boq
   for (const k of new Set([...mapA.keys(), ...mapB.keys()])) {
     const a = mapA.get(k);
     const b = mapB.get(k);
-    const amountA = a ? calcA.amounts[a.id] ?? 0 : null;
-    const amountB = b ? calcB.amounts[b.id] ?? 0 : null;
+    const amountA = a ? round(a.amount, decimals) : null;
+    const amountB = b ? round(b.amount, decimals) : null;
     if (amountA != null) totalA += amountA;
     if (amountB != null) totalB += amountB;
 
@@ -78,8 +90,8 @@ export function compareBoqs(boqA: Boq, itemsA: BoqItem[], boqB: Boq, itemsB: Boq
 
     rows.push({
       key: k,
-      code: (a ?? b)?.code,
-      description: (a ?? b)?.description ?? "",
+      code: (a ?? b)?.item.code,
+      description: (a ?? b)?.item.description ?? "",
       side,
       amountA,
       amountB,

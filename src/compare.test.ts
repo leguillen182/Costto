@@ -64,4 +64,20 @@ describe("compareBoqs", () => {
     // Con 4 decimales el delta sobrevive; con el viejo redondeo fijo a 2 daría 0.00.
     expect(r.rows[0]!.deltaAmount).toBeCloseTo(0.0005, 4);
   });
+
+  it("agrega líneas con clave repetida en vez de descartarlas", () => {
+    // Misma descripción sin código en dos capítulos distintos: antes una pisaba a la otra
+    // y el total del lado A quedaba corto.
+    const a = [
+      { ...line("A", "", 1, 100, "Limpieza"), id: "A-l1" },
+      { ...line("A", "", 2, 100, "Limpieza"), id: "A-l2" },
+    ];
+    const b = [line("B", "", 3, 120, "Limpieza")];
+    const r = compareBoqs(boqA, a, boqB, b);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]!.amountA).toBe(300); // 100 + 200, no solo la última
+    expect(r.rows[0]!.amountB).toBe(360);
+    expect(r.totalA).toBe(300);
+    expect(r.deltaTotal).toBe(60);
+  });
 });
