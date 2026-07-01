@@ -95,7 +95,8 @@ describe("exportCsv — writeBoqCsv", () => {
 
     const dir = mkdtempSync(join(tmpdir(), "costto-csv-"));
     const dest = writeBoqCsv(db, "b1", dir);
-    expect(dest).toBe(join(dir, "Torre_A.csv"));
+    // Nombre saneado + id corto: presupuestos homónimos no se pisan el CSV.
+    expect(dest).toBe(join(dir, "Torre_A-b1.csv"));
     expect(existsSync(dest!)).toBe(true);
     const content = readFileSync(dest!, "utf8");
     expect(content.startsWith("﻿")).toBe(true);

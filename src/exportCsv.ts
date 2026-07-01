@@ -72,7 +72,9 @@ export function writeBoqCsv(db: AppDb, boqId: string, dir: string): string | nul
   if (!boq) return null;
   const csv = buildCsv(boq, getItems(db, boqId), calcBoq(db, boqId));
   mkdirSync(dir, { recursive: true });
-  const dest = join(dir, `${safeName(boq.name)}.csv`);
+  // Sufijo con el id corto: dos presupuestos con el mismo nombre (p. ej. el default
+  // "Presupuesto base") no deben pisarse el CSV mutuamente.
+  const dest = join(dir, `${safeName(boq.name)}-${boqId.slice(0, 8)}.csv`);
   writeFileSync(dest, csv, "utf8");
   return dest;
 }

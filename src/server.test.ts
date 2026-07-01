@@ -116,4 +116,71 @@ describe("server — endpoints HTTP", () => {
     });
     expect(put.status).toBe(400);
   });
+
+  it("PUT inválido (400) no deja un guardado parcial", async () => {
+    const before = await (await fetch(`${base}/api/boq/b1`)).json();
+    const put = await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [], markups: [], builtArea: "850" }),
+    });
+    expect(put.status).toBe(400);
+    // Los items NO deben haberse borrado: la validación va antes de escribir.
+    const after = await (await fetch(`${base}/api/boq/b1`)).json();
+    expect(after.items).toHaveLength(before.items.length);
+  });
+
+  it("PUT con items no-array responde 400", async () => {
+    const put = await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: "hola" }),
+    });
+    expect(put.status).toBe(400);
+  });
+
+  it("PUT fuerza el boqId de la URL: un boqId ajeno no contamina otro presupuesto", async () => {
+    // Crear un segundo presupuesto b2.
+    const c = await fetch(`${base}/api/boqs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectName: "P2", boqName: "B2", currency: "DOP" }),
+    });
+    const { id: b2 } = await c.json();
+    const b2Before = await (await fetch(`${base}/api/boq/${b2}`)).json();
+
+    // Guardar en b1 un ítem que dice pertenecer a b2.
+    const put = await fetch(`${base}/api/boq/b1`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: [{ id: "intruso", boqId: b2, parentId: null, sortOrder: 1, description: "Intruso", nodeType: "line", lineType: "unit_price", quantity: 1, unit: "un", unitRate: 100 }],
+        markups: [],
+      }),
+    });
+    expect(put.status).toBe(200);
+
+    const b1After = await (await fetch(`${base}/api/boq/b1`)).json();
+    const b2After = await (await fetch(`${base}/api/boq/${b2}`)).json();
+    expect(b1After.items.map((i: { id: string }) => i.id)).toContain("intruso");
+    expect(b2After.items).toHaveLength(b2Before.items.length); // b2 intacto
+  });
+
+  it("POST /api/boq/:id/import con bytes que no son .xlsx responde 400", async () => {
+    const r = await fetch(`${base}/api/boq/b1/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: Buffer.from("esto no es un xlsx"),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it("POST snapshot con label no-string responde 400 (no 500)", async () => {
+    const r = await fetch(`${base}/api/boq/b1/snapshots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: 5 }),
+    });
+    expect(r.status).toBe(400);
+  });
 });

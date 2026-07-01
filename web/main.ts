@@ -65,11 +65,17 @@ const visibleMidCols = () => (["unit", "quantity", "unitRate"] as ToggleCol[]).f
 const visibleColCount = () => 2 + TOGGLE_COLS.filter((c) => isVis(c.key)).length;
 
 // ---- API ----
+// Guardia contra respuestas fuera de orden al cambiar rápido de presupuesto:
+// solo la carga más reciente puede tocar el estado (si no, un `save` posterior
+// podría escribir los items del presupuesto B sobre el id del C).
+let loadSeq = 0;
 async function load() {
+  const seq = ++loadSeq;
   try {
     const r = await fetch(`/api/boq/${currentBoqId}`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
+    if (seq !== loadSeq) return; // llegó tarde: hay una carga más reciente en curso
     boq = data.boq;
     items = data.items;
     markups = data.markups;
@@ -77,11 +83,25 @@ async function load() {
     render();
     setStatus("saved");
   } catch (e) {
+    if (seq !== loadSeq) return;
     document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:var(--error)">No se pudo cargar el BOQ. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
   }
 }
 
-async function save() {
+// Los guardados van en serie (dos Cmd+S seguidos no corren PUTs en paralelo) y el
+// estado "Guardado ✓" solo se muestra si NO hubo ediciones mientras el PUT volaba:
+// esas ediciones no viajaron en el cuerpo, así que el estado sigue siendo "dirty".
+let editVersion = 0;
+let saveChain: Promise<boolean> = Promise.resolve(true);
+
+function save(): Promise<boolean> {
+  const run = saveChain.then(doSave);
+  saveChain = run;
+  return run;
+}
+
+async function doSave(): Promise<boolean> {
+  const version = editVersion;
   setStatus("saving");
   try {
     const r = await fetch(`/api/boq/${currentBoqId}`, {
@@ -90,9 +110,11 @@ async function save() {
       body: JSON.stringify({ items, markups, detailLevel: boq.detailLevel ?? "simple", builtArea: boq.builtArea ?? null }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    setStatus("saved");
+    setStatus(editVersion === version ? "saved" : "dirty");
+    return true;
   } catch (e) {
     setStatus("error");
+    return false;
   }
 }
 
@@ -237,7 +259,12 @@ export const showPrompt = (label: string, def = "", title = label): Promise<stri
     .then((r) => (r === null ? null : r.value ?? ""));
 
 async function exportExcel() {
-  await save(); // exporta el estado persistido
+  // Exporta el estado persistido: si el guardado falló, el archivo traería el
+  // estado anterior y el usuario creería que incluye sus cambios.
+  if (!(await save())) {
+    await showAlert("No se pudo guardar antes de exportar. Revisa la conexión con la API e inténtalo de nuevo.", "Exportar a Excel");
+    return;
+  }
   window.location.href = `/api/boq/${currentBoqId}/export`;
 }
 
@@ -277,6 +304,7 @@ function importExcel() {
 // ---- multi-proyecto (F1) ----
 async function loadList() {
   const r = await fetch("/api/boqs");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const d = await r.json();
   boqList = d.boqs ?? [];
   if (!currentBoqId || !boqList.some((b) => b.id === currentBoqId)) {
@@ -309,6 +337,10 @@ async function newBudget() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectName, boqName, currency }),
   });
+  if (!r.ok) {
+    await showAlert("No se pudo crear el presupuesto. Revisa la conexión con la API.", "Nuevo presupuesto");
+    return;
+  }
   const d = await r.json();
   await loadList();
   currentBoqId = d.id;
@@ -316,7 +348,12 @@ async function newBudget() {
   await load();
 }
 async function init() {
-  await loadList();
+  try {
+    await loadList();
+  } catch (e) {
+    document.getElementById("app")!.innerHTML = `<div style="padding:40px;color:var(--error)">No se pudo cargar la lista de presupuestos. ¿Está corriendo la API? (<code>npm run api</code>)<br><small>${e}</small></div>`;
+    return;
+  }
   if (!currentBoqId) {
     document.getElementById("app")!.innerHTML = `<div style="padding:40px">No hay presupuestos. <button id="nb">+ Nuevo presupuesto</button></div>`;
     document.getElementById("nb")!.addEventListener("click", newBudget);
@@ -424,13 +461,16 @@ function fmtDate(iso: string): string {
 // ---- estado guardado ----
 let statusEl: HTMLElement | null = null;
 function setStatus(s: "saved" | "dirty" | "saving" | "error") {
-  dirty = s === "dirty";
+  // "saving"/"error" no tocan `dirty`: un guardado fallido o en vuelo sigue
+  // teniendo cambios sin persistir y debe seguir avisando al cambiar de BOQ.
+  if (s === "dirty") dirty = true;
+  else if (s === "saved") dirty = false;
   if (!statusEl) return;
   const labels = { saved: "Guardado ✓", dirty: "Sin guardar", saving: "Guardando…", error: "Error al guardar" } as const;
   statusEl.textContent = labels[s];
   statusEl.dataset.status = s;
 }
-function markDirty() { setStatus("dirty"); }
+function markDirty() { editVersion++; setStatus("dirty"); }
 
 // ---- modelo / árbol ----
 // La lógica de árbol (pura) vive en src/tree.ts; aquí solo se envuelve para
@@ -626,9 +666,25 @@ function patchSummary(amounts: Record<string, number>) {
   }
 }
 
+// recompute() corre en cada tecla: el panel solo se reconstruye si el resultado de la
+// validación cambió (misma disciplina que el resumen por capítulo — nada de rehacer DOM
+// ni listeners por pulsación cuando los problemas son los mismos).
+let validationKey = "";
+let validationOwner: HTMLElement | null = null;
+
 function renderValidation() {
   if (!validationEl) return;
   const issues = validate(boq, items);
+  // La referencia mostrada (código/descripción del ítem) puede cambiar sin que cambie
+  // la lista de problemas: entra en la clave para que el panel no se quede desfasado.
+  const refOf = (id: string | null) => {
+    const it = id ? items.find((i) => i.id === id) : undefined;
+    return it ? (it.code?.trim() || it.description?.trim() || "—") : "";
+  };
+  const key = JSON.stringify(issues.map((is) => [is.itemId, is.rule, is.severity, is.message, refOf(is.itemId)]));
+  if (validationOwner === validationEl && key === validationKey) return;
+  validationOwner = validationEl;
+  validationKey = key;
   const errs = issues.filter((i) => i.severity === "error").length;
   const warns = issues.length - errs;
   validationEl.innerHTML = "";
@@ -648,12 +704,16 @@ function renderValidation() {
     const list = document.createElement("div");
     list.className = "val-list";
     for (const is of issues) {
-      const it = items.find((i) => i.id === is.itemId);
       const row = document.createElement("div");
       row.className = `val-item ${is.severity}`;
-      const ref = it ? (it.code?.trim() || it.description?.trim() || "—") : "";
+      const ref = refOf(is.itemId);
       const sev = is.severity === "error" ? "Error" : "Aviso";
-      row.innerHTML = `<span class="dot" aria-hidden="true"></span><span class="sr-only">${sev}:</span><span class="msg">${is.message}</span><span class="ref">${ref}</span>`;
+      // textContent, no innerHTML: mensaje y referencia llevan texto del usuario (código/descripción).
+      const dot = document.createElement("span"); dot.className = "dot"; dot.setAttribute("aria-hidden", "true");
+      const srOnly = document.createElement("span"); srOnly.className = "sr-only"; srOnly.textContent = `${sev}:`;
+      const msg = document.createElement("span"); msg.className = "msg"; msg.textContent = is.message;
+      const refEl = document.createElement("span"); refEl.className = "ref"; refEl.textContent = ref;
+      row.append(dot, srOnly, msg, refEl);
       if (is.itemId) {
         row.addEventListener("click", () => { selectRow(is.itemId!); focusCell(is.itemId!, "description"); });
       }
@@ -750,7 +810,8 @@ function makeCell(it: BoqItem, col: Col): HTMLInputElement {
 }
 
 function onKey(e: KeyboardEvent, it: BoqItem, col: Col) {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+  // stopPropagation: sin él, el listener global de window volvería a llamar save() (PUT doble).
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); e.stopPropagation(); save(); return; }
   if (e.altKey && e.key === "ArrowRight") { e.preventDefault(); indent(it, col); }
   else if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); outdent(it, col); }
   else if (e.key === "Enter") { e.preventDefault(); addLine(it.parentId, it.sortOrder); }
@@ -875,13 +936,17 @@ function appendCompareBody(wrap: HTMLElement, d: CompareData, L: CompareLabels) 
     const symCls = r.side === "onlyB" ? "add" : r.side === "onlyA" ? "remove" : changed ? "mod" : "same";
     const rowCls = r.side === "onlyB" ? "row-add" : r.side === "onlyA" ? "row-remove" : changed ? "row-mod" : "";
     if (rowCls) tr.className = rowCls;
+    // Código y descripción vienen del usuario (o de un Excel importado): siempre textContent.
     tr.innerHTML = `
       <td class="diff-sym ${symCls}">${sym}</td>
-      <td class="code"><div class="cellpad">${r.code ?? ""}</div></td>
-      <td><div class="cellpad">${r.description}</div></td>
+      <td class="code"><div class="cellpad"></div></td>
+      <td><div class="cellpad"></div></td>
       <td class="num"><div class="cellpad">${fA(r.amountA)}</div></td>
       <td class="num"><div class="cellpad">${fA(r.amountB)}</div></td>
       <td class="num ${dpos ? "delta-up" : dneg ? "delta-down" : ""}"><div class="cellpad">${fmtDelta(r.deltaAmount, r.deltaPct)}</div></td>`;
+    const pads = tr.querySelectorAll<HTMLElement>(".cellpad");
+    pads[0]!.textContent = r.code ?? "";
+    pads[1]!.textContent = r.description;
     tb.appendChild(tr);
   }
   table.appendChild(tb);
@@ -955,7 +1020,11 @@ function renderVersiones() {
   const tb = document.createElement("tbody");
   for (const s of snapshots) {
     const tr = document.createElement("tr");
-    const td1 = document.createElement("td"); td1.innerHTML = `<div class="cellpad"><strong>${s.label}</strong></div>`;
+    // La etiqueta la escribe el usuario: textContent, no innerHTML.
+    const td1 = document.createElement("td");
+    const pad1 = document.createElement("div"); pad1.className = "cellpad";
+    const strong = document.createElement("strong"); strong.textContent = s.label;
+    pad1.appendChild(strong); td1.appendChild(pad1);
     const td2 = document.createElement("td"); td2.innerHTML = `<div class="cellpad">${fmtDate(s.createdAt)}</div>`;
     const td3 = document.createElement("td"); td3.className = "num"; td3.innerHTML = `<div class="cellpad">${money.format(s.frozenTotal)}</div>`;
     const td4 = document.createElement("td");

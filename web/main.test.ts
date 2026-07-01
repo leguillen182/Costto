@@ -118,6 +118,58 @@ describe("editor — costo/m² (F4)", () => {
   });
 });
 
+describe("editor — seguridad (XSS)", () => {
+  it("una descripción con HTML no se inyecta en el panel de validación", async () => {
+    await boot();
+    // Provocar un problema de validación en una partida cuya descripción trae markup.
+    const code = cell("l1", "code");
+    code.value = ""; // sin código, la referencia del panel usa la descripción
+    code.dispatchEvent(new Event("input"));
+    const desc = cell("l1", "description");
+    desc.value = `<img src=x onerror="window.__pwned=true">`;
+    desc.dispatchEvent(new Event("input"));
+    const q = cell("l1", "quantity");
+    q.value = "0"; // cantidad 0 → error de validación → la fila aparece en el panel
+    q.dispatchEvent(new Event("input"));
+
+    const panel = document.querySelector(".validation-panel")!;
+    expect(panel.querySelector("img")).toBeNull(); // el HTML quedó como texto, no como nodo
+    expect(panel.textContent).toContain("<img");
+    expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+});
+
+describe("editor — guardado", () => {
+  it("editar durante un guardado en vuelo NO deja el estado en 'Guardado ✓'", async () => {
+    await boot();
+    // PUT lento y controlado.
+    let resolvePut!: (v: Response) => void;
+    (fetch as ReturnType<typeof vi.fn>).mockImplementation((input: RequestInfo | URL, opts?: RequestInit) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/boq/b1" && opts?.method === "PUT") {
+        return new Promise<Response>((res) => { resolvePut = res; });
+      }
+      return mockFetch(input, opts);
+    });
+
+    const q = cell("l3", "quantity");
+    q.value = "2";
+    q.dispatchEvent(new Event("input")); // dirty
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true })); // ⌘S → PUT en vuelo
+    await new Promise((r) => setTimeout(r, 0)); // deja que doSave dispare el fetch (queda pendiente)
+
+    // Edición mientras el PUT vuela: no viaja en ese cuerpo.
+    q.value = "3";
+    q.dispatchEvent(new Event("input"));
+
+    resolvePut({ ok: true, status: 200, json: async () => ({ ok: true, calc: {} }) } as Response);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const status = document.querySelector<HTMLElement>("#status");
+    expect(status?.dataset.status).toBe("dirty"); // no "saved": la última edición sigue sin guardar
+  });
+});
+
 describe("editor — vista Versiones (F3)", () => {
   it("abrir Versiones renderiza el panel de congelar", async () => {
     await boot();

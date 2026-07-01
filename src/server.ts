@@ -59,22 +59,31 @@ export function seedIfEmpty(db: AppDb) {
   insertMarkups(db, [{ id: "m_itbis", boqId: "b1", name: "ITBIS", type: "percentage", value: 18, basis: "running", sortOrder: 1 }]);
 }
 
-function readBody(req: import("node:http").IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (c) => (data += c));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
-}
+// Límite de cuerpo: un BOQ o .xlsx real cabe de sobra; evita bufferizar bodies arbitrarios.
+const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
 function readBodyBuffer(req: import("node:http").IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(c as Buffer));
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new HttpError(413, "Cuerpo demasiado grande"));
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
+}
+
+// Decodifica el buffer completo de una vez: concatenar chunk.toString() por separado
+// rompería un carácter multi-byte (ó, ñ…) partido entre dos chunks.
+async function readBody(req: import("node:http").IncomingMessage): Promise<string> {
+  return (await readBodyBuffer(req)).toString("utf8");
 }
 
 function json(res: import("node:http").ServerResponse, code: number, body: unknown) {
@@ -109,6 +118,7 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
         boqName: body.boqName?.trim() || "Presupuesto base",
         currency: body.currency?.trim() || "DOP",
       });
+      onMutate(); // crear un presupuesto también es una mutación: respaldar (F7)
       return json(res, 201, { id });
     }
 
@@ -144,7 +154,13 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       const id = im[1]!;
       if (!getBoq(db, id)) return json(res, 404, { error: "BOQ no encontrado" });
       const buf = await readBodyBuffer(req);
-      const { items, rowsRead, flat } = await parseWorkbook(buf, id);
+      let parsed: Awaited<ReturnType<typeof parseWorkbook>>;
+      try {
+        parsed = await parseWorkbook(buf, id);
+      } catch {
+        throw new HttpError(400, "Archivo .xlsx inválido o corrupto");
+      }
+      const { items, rowsRead, flat } = parsed;
       const markups = getMarkups(db, id); // preservar markups existentes
       saveBoqContents(db, id, items, markups);
       onMutate();
@@ -166,6 +182,12 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       const boq = getBoq(db, id);
       if (!boq) return json(res, 404, { error: "BOQ no encontrado" });
       const body = parseBody<{ label?: string; note?: string }>(await readBody(req));
+      if (body.label != null && typeof body.label !== "string") {
+        return json(res, 400, { error: "label debe ser un string" });
+      }
+      if (body.note != null && typeof body.note !== "string") {
+        return json(res, 400, { error: "note debe ser un string" });
+      }
       const snap = buildSnapshot({
         id: randomUUID(),
         boqId: id,
@@ -214,15 +236,26 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
         detailLevel?: "simple" | "detailed";
         builtArea?: number | null;
       }>(await readBody(req));
-      saveBoqContents(db, id, body.items ?? [], body.markups ?? []);
+      // Toda la validación ANTES de escribir: un 400 nunca debe dejar un guardado parcial.
+      if (body.items != null && !Array.isArray(body.items)) {
+        return json(res, 400, { error: "items debe ser un array" });
+      }
+      if (body.markups != null && !Array.isArray(body.markups)) {
+        return json(res, 400, { error: "markups debe ser un array" });
+      }
+      if ("builtArea" in body && body.builtArea !== null && typeof body.builtArea !== "number") {
+        return json(res, 400, { error: "builtArea debe ser un número o null" });
+      }
+      // El contenido pertenece SIEMPRE al BOQ de la URL: se fuerza boqId para que un
+      // cuerpo con boqId ajeno no inserte filas huérfanas en otro presupuesto.
+      const items = (body.items ?? []).map((it) => ({ ...it, boqId: id }));
+      const rules = (body.markups ?? []).map((r) => ({ ...r, boqId: id }));
+      saveBoqContents(db, id, items, rules);
       if (body.detailLevel === "simple" || body.detailLevel === "detailed") {
         updateBoqDetailLevel(db, id, body.detailLevel);
       }
       if ("builtArea" in body) {
         const a = body.builtArea;
-        if (a !== null && typeof a !== "number") {
-          return json(res, 400, { error: "builtArea debe ser un número o null" });
-        }
         // ≤ 0 / NaN → "sin área" (null): normalización consciente de F4.
         updateBoqBuiltArea(db, id, typeof a === "number" && a > 0 ? a : null);
       }
@@ -233,6 +266,12 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
 
     json(res, 404, { error: "ruta no encontrada" });
   } catch (err) {
+    // Si ya se enviaron headers (p. ej. export a Excel fallido a mitad de stream),
+    // json() lanzaría ERR_HTTP_HEADERS_SENT dentro del catch → rechazo sin manejar.
+    if (res.headersSent) {
+      console.error("Error tras enviar headers:", err);
+      return res.destroy();
+    }
     if (err instanceof HttpError) return json(res, err.code, { error: err.message });
     console.error("Error no controlado:", err); // log completo del lado servidor
     json(res, 500, { error: "Error interno del servidor" }); // mensaje genérico, sin filtrar internos
@@ -247,9 +286,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Datos demo solo cuando se pide explícitamente (BOQ_SEED=1) — nunca por accidente en producción.
   if (process.env.BOQ_SEED === "1") seedIfEmpty(db);
   // Respaldo automático del data.db tras cada guardado (F7): conserva los 3 más recientes en backups/.
+  // Encadenado en serie: dos guardados seguidos no deben rotar/borrar un respaldo aún en escritura.
+  let backupChain: Promise<unknown> = Promise.resolve();
   const onMutate = () => {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    backupDb(sqlite, "backups", stamp, 3).catch((e) => console.error("Respaldo falló:", e));
+    backupChain = backupChain.then(() => {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      return backupDb(sqlite, "backups", stamp, 3);
+    }).catch((e) => console.error("Respaldo falló:", e));
   };
   createApp(db, onMutate).listen(PORT, () => console.log(`API BOQ en http://localhost:${PORT}`));
 }

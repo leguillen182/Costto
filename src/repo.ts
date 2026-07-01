@@ -134,14 +134,23 @@ export function updateBoqBuiltArea(db: AppDb, boqId: string, area: number | null
   db.update(boqs).set({ builtArea: area }).where(eq(boqs.id, boqId)).run();
 }
 
+// Inserta por lotes: un INSERT multi-fila con miles de ítems (~18 parámetros por fila)
+// excede el límite de variables ligadas de SQLite y el guardado fallaría entero.
+const INSERT_CHUNK = 500;
+function chunked<T>(arr: T[]): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += INSERT_CHUNK) out.push(arr.slice(i, i + INSERT_CHUNK));
+  return out;
+}
+
 export function insertItems(db: AppDb, items: BoqItem[]): void {
   if (items.length === 0) return;
-  db.insert(boqItems).values(items.map(itemToRow)).run();
+  for (const chunk of chunked(items)) db.insert(boqItems).values(chunk.map(itemToRow)).run();
 }
 
 export function insertMarkups(db: AppDb, rules: MarkupRule[]): void {
   if (rules.length === 0) return;
-  db.insert(markupRules).values(rules).run();
+  for (const chunk of chunked(rules)) db.insert(markupRules).values(chunk).run();
 }
 
 export interface BoqSummary {
@@ -206,8 +215,8 @@ export function saveBoqContents(db: AppDb, boqId: string, items: BoqItem[], rule
   db.transaction((tx) => {
     tx.delete(boqItems).where(eq(boqItems.boqId, boqId)).run();
     tx.delete(markupRules).where(eq(markupRules.boqId, boqId)).run();
-    if (items.length) tx.insert(boqItems).values(items.map(itemToRow)).run();
-    if (rules.length) tx.insert(markupRules).values(rules).run();
+    for (const chunk of chunked(items)) tx.insert(boqItems).values(chunk.map(itemToRow)).run();
+    for (const chunk of chunked(rules)) tx.insert(markupRules).values(chunk).run();
   });
 }
 

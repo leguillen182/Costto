@@ -330,6 +330,9 @@ async function loadPdf(file: File): Promise<void> {
     pageNum = 1;
     scaleByPage.clear();
     measurements = [];
+    // Igual que gotoPage: un trazo a medias del documento anterior no debe
+    // sobrevivir al cambio de PDF (sus coordenadas pertenecen al plano viejo).
+    draft = []; cursor = null; snapActive = false; forceNewCount = false;
     placeholder.style.display = "none";
     await renderPage();
     await fitWidth(); // abre el plano ajustado al ancho del visor (no al 100% descuadrado)
@@ -589,6 +592,9 @@ function togglePan(): void {
 
 // ---- pan (Mano, barra espaciadora + arrastrar, o botón central) ----
 function onMouseDown(e: MouseEvent): void {
+  // Un suppressClick huérfano (pan con botón central → no hay click; o pan soltado fuera
+  // del canvas) no debe comerse el siguiente click real: cada gesto nuevo lo limpia.
+  suppressClick = false;
   if (e.button === 1 || (panMode && e.button === 0) || (spaceDown && e.button === 0)) {
     e.preventDefault();
     panning = true;
@@ -658,6 +664,18 @@ function setTool(t: Tool): void {
   redrawOverlay();
 }
 
+// Las cantidades se congelan al medir: recalibrar NO recalcula lo ya medido.
+// Si la página ya tiene mediciones escaladas, avisar para que el usuario las rehaga.
+async function warnStaleMeasurements(): Promise<void> {
+  const stale = measurements.some((m) => m.page === pageNum && m.kind !== "count");
+  if (stale) {
+    await ctx?.showAlert(
+      "Esta página ya tenía mediciones: sus cantidades se calcularon con la escala anterior y NO se recalculan. Bórralas y mídelas de nuevo si la calibración vieja era incorrecta.",
+      "Escala actualizada",
+    );
+  }
+}
+
 async function finishCalibration(): Promise<void> {
   const [a, b] = [draft[0]!, draft[1]!];
   draft = []; cursor = null;
@@ -667,6 +685,7 @@ async function finishCalibration(): Promise<void> {
     const unitsPerPdf = calibrationFactor(a, b, ans);
     scaleByPage.set(pageNum, { unitsPerPdf, realUnit });
     tool = "longitud";
+    await warnStaleMeasurements();
   } catch (err) {
     await ctx?.showAlert(`Calibración inválida: ${err}`, "Calibrar");
   }
@@ -693,13 +712,24 @@ async function calibrateByRatio(): Promise<void> {
     await ctx!.showAlert(`Escala inválida: ${err}`, "Calibrar");
     return;
   }
+  await warnStaleMeasurements();
   refreshChrome();
   redrawOverlay();
 }
 
+// El grupo de conteo activo es el MÁS RECIENTE sin enviar de la página: si "＋ grupo conteo"
+// creó uno nuevo, los clicks siguientes deben caer ahí, no en el primer grupo viejo.
+function activeCountGroup(): Measurement | undefined {
+  for (let i = measurements.length - 1; i >= 0; i--) {
+    const x = measurements[i]!;
+    if (x.kind === "count" && x.page === pageNum && !x.sent) return x;
+  }
+  return undefined;
+}
+
 function addCountMarker(p: Pt): void {
   // forceNewCount → empieza un grupo de conteo nuevo (permite contar p.ej. ventanas y puertas aparte).
-  let m = forceNewCount ? undefined : measurements.find((x) => x.kind === "count" && x.page === pageNum && !x.sent);
+  let m = forceNewCount ? undefined : activeCountGroup();
   forceNewCount = false;
   if (!m) {
     const n = measurements.filter((x) => x.kind === "count").length + 1;
