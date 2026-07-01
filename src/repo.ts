@@ -1,8 +1,9 @@
 // Repositorio: persistencia de Project / Boq / BoqItem / MarkupRule en SQLite,
 // y puente al motor de cálculo (calcBoq carga desde DB y llama recalculate).
-import { eq } from "drizzle-orm";
+import { eq, like, or } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { AppDb } from "./db/client.js";
-import { projects, boqs, boqItems, markupRules, boqSnapshots } from "./db/schema.js";
+import { projects, boqs, boqItems, markupRules, boqSnapshots, catalogItems } from "./db/schema.js";
 import type { BoqSnapshot, SnapshotSummary } from "./snapshot.js";
 import { recalculate } from "./calc.js";
 import type {
@@ -11,6 +12,7 @@ import type {
   BoqItem,
   MarkupRule,
   BoqCalcResult,
+  CatalogItem,
   NodeType,
   LineType,
   MarkupType,
@@ -218,6 +220,111 @@ export function saveBoqContents(db: AppDb, boqId: string, items: BoqItem[], rule
     for (const chunk of chunked(items)) tx.insert(boqItems).values(chunk.map(itemToRow)).run();
     for (const chunk of chunked(rules)) tx.insert(markupRules).values(chunk).run();
   });
+}
+
+// ---------- Catálogo de precios unitarios (F9) ----------
+function rowToCatalog(r: typeof catalogItems.$inferSelect): CatalogItem {
+  return {
+    id: r.id,
+    code: r.code ?? undefined,
+    description: r.description,
+    unit: r.unit ?? undefined,
+    unitRate: r.unitRate,
+    rateLabor: r.rateLabor,
+    rateMaterial: r.rateMaterial,
+    rateEquipment: r.rateEquipment,
+    rateSubcontract: r.rateSubcontract,
+    rateOther: r.rateOther,
+    currency: r.currency ?? undefined,
+    updatedAt: r.updatedAt,
+  };
+}
+
+function catalogToRow(c: CatalogItem) {
+  return {
+    id: c.id,
+    code: c.code?.trim() || null,
+    description: c.description,
+    unit: c.unit ?? null,
+    unitRate: c.unitRate ?? null,
+    rateLabor: c.rateLabor ?? null,
+    rateMaterial: c.rateMaterial ?? null,
+    rateEquipment: c.rateEquipment ?? null,
+    rateSubcontract: c.rateSubcontract ?? null,
+    rateOther: c.rateOther ?? null,
+    currency: c.currency ?? null,
+    updatedAt: c.updatedAt,
+  };
+}
+
+/** Lista/busca el catálogo. `q` filtra por código o descripción (contiene, sin mayúsculas). */
+export function listCatalog(db: AppDb, q?: string): CatalogItem[] {
+  const base = db.select().from(catalogItems);
+  const rows = q?.trim()
+    ? base.where(or(like(catalogItems.code, `%${q.trim()}%`), like(catalogItems.description, `%${q.trim()}%`))).all()
+    : base.all();
+  return rows
+    .map(rowToCatalog)
+    .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "") || a.description.localeCompare(b.description));
+}
+
+/** Inserta o actualiza (por id) una partida del catálogo. */
+export function saveCatalogItem(db: AppDb, item: CatalogItem): void {
+  db.insert(catalogItems)
+    .values(catalogToRow(item))
+    .onConflictDoUpdate({ target: catalogItems.id, set: catalogToRow(item) })
+    .run();
+}
+
+export function deleteCatalogItem(db: AppDb, id: string): void {
+  db.delete(catalogItems).where(eq(catalogItems.id, id)).run();
+}
+
+// Clave de emparejamiento con el catálogo: código normalizado, o descripción si no hay código.
+// (Mismo criterio que compareBoqs: el código manda cuando existe.)
+function catalogKey(code: string | undefined, description: string): string {
+  const c = code?.trim();
+  return c ? "c:" + c.toLowerCase() : "d:" + description.trim().toLowerCase();
+}
+
+/** Vuelca las líneas de un BOQ al catálogo: actualiza precio/unidad/desglose de las
+ *  existentes (emparejadas por código, o descripción si no hay código) y crea las nuevas.
+ *  Ignora capítulos y líneas sin descripción. Devuelve cuántas agregó y actualizó. */
+export function upsertCatalogFromItems(
+  db: AppDb,
+  items: BoqItem[],
+  currency: string,
+  updatedAt: string,
+): { added: number; updated: number } {
+  const existing = new Map(listCatalog(db).map((c) => [catalogKey(c.code, c.description), c]));
+  let added = 0;
+  let updated = 0;
+  db.transaction(() => {
+    for (const it of items) {
+      if (it.nodeType !== "line" || !it.description?.trim()) continue;
+      const key = catalogKey(it.code, it.description);
+      const prev = existing.get(key);
+      const entry: CatalogItem = {
+        id: prev?.id ?? randomUUID(),
+        code: it.code?.trim() || undefined,
+        description: it.description,
+        unit: it.unit || undefined,
+        unitRate: it.unitRate ?? null,
+        rateLabor: it.rateLabor ?? null,
+        rateMaterial: it.rateMaterial ?? null,
+        rateEquipment: it.rateEquipment ?? null,
+        rateSubcontract: it.rateSubcontract ?? null,
+        rateOther: it.rateOther ?? null,
+        currency: it.currency ?? currency,
+        updatedAt,
+      };
+      saveCatalogItem(db, entry);
+      existing.set(key, entry); // dos líneas iguales en el mismo BOQ: la última manda
+      if (prev) updated++;
+      else added++;
+    }
+  });
+  return { added, updated };
 }
 
 // ---------- Snapshots / versiones (F3) ----------

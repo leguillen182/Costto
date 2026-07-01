@@ -62,6 +62,23 @@ export const unitsOfMeasure = sqliteTable("units_of_measure", {
   dimension: text("dimension"),
 });
 
+// Catálogo de precios unitarios (F9): partidas maestras reutilizables entre
+// presupuestos. Se alimenta a mano o desde las líneas de un BOQ (upsert por código).
+export const catalogItems = sqliteTable("catalog_items", {
+  id: text("id").primaryKey(),
+  code: text("code"),
+  description: text("description").notNull(),
+  unit: text("unit"),
+  unitRate: real("unit_rate"),
+  rateLabor: real("rate_labor"),
+  rateMaterial: real("rate_material"),
+  rateEquipment: real("rate_equipment"),
+  rateSubcontract: real("rate_subcontract"),
+  rateOther: real("rate_other"),
+  currency: text("currency"),
+  updatedAt: text("updated_at").notNull(),
+});
+
 // Versiones / snapshots congelados del presupuesto (F3). El payload guarda el
 // contenido completo (boq + items + markups) como JSON inmutable.
 export const boqSnapshots = sqliteTable("boq_snapshots", {

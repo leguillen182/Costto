@@ -423,6 +423,210 @@ async function compareWithSnapshot(id: string) {
 function backToSnapshotList() { snapshotCompareId = ""; render(); }
 function closeVersiones() { snapshotMode = false; render(); }
 
+// ---- catálogo de precios unitarios (F9) ----
+interface CatalogEntry {
+  id: string; code?: string; description: string; unit?: string;
+  unitRate?: number | null;
+  rateLabor?: number | null; rateMaterial?: number | null; rateEquipment?: number | null;
+  rateSubcontract?: number | null; rateOther?: number | null;
+  currency?: string; updatedAt: string;
+}
+let catalogMode = false;
+let catalogList: CatalogEntry[] = [];
+let catalogQuery = "";
+let catalogTbody: HTMLTableSectionElement | null = null;
+
+function openCatalog() {
+  catalogMode = true;
+  catalogQuery = "";
+  catalogList = [];
+  render();
+  void refreshCatalog();
+}
+function closeCatalog() { catalogMode = false; render(); }
+
+async function refreshCatalog() {
+  const r = await fetch(`/api/catalog?q=${encodeURIComponent(catalogQuery)}`);
+  catalogList = r.ok ? (await r.json()).items : [];
+  fillCatalogTbody();
+}
+
+/** Vuelca las líneas del presupuesto actual al catálogo (guarda primero: el volcado lee la DB). */
+async function sendLinesToCatalog() {
+  if (!(await save())) {
+    await showAlert("No se pudo guardar antes de enviar al catálogo.", "Catálogo");
+    return;
+  }
+  const r = await fetch(`/api/catalog/from-boq/${currentBoqId}`, { method: "POST" });
+  if (!r.ok) { await showAlert("No se pudo actualizar el catálogo.", "Catálogo"); return; }
+  const d = await r.json();
+  await refreshCatalog();
+  await showAlert(`Catálogo actualizado: ${d.added} partida(s) nueva(s), ${d.updated} precio(s) actualizado(s).`, "Catálogo");
+}
+
+async function newCatalogEntry() {
+  const r = await showDialog({
+    title: "Nueva partida de catálogo",
+    fields: [
+      { name: "code", label: "Código (opcional)" },
+      { name: "description", label: "Descripción" },
+      { name: "unit", label: "Unidad" },
+      { name: "unitRate", label: "P. Unitario", type: "number" },
+    ],
+    confirmLabel: "Crear",
+  });
+  if (r == null) return;
+  if (!r.description?.trim()) { await showAlert("La descripción es obligatoria.", "Catálogo"); return; }
+  const rate = parseFloat(r.unitRate ?? "");
+  const resp = await fetch("/api/catalog", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: r.code?.trim() || undefined,
+      description: r.description.trim(),
+      unit: r.unit?.trim() || undefined,
+      unitRate: Number.isFinite(rate) ? rate : null,
+      currency: boq?.currency,
+    }),
+  });
+  if (!resp.ok) { await showAlert("No se pudo crear la partida.", "Catálogo"); return; }
+  await refreshCatalog();
+}
+
+async function deleteCatalogEntry(c: CatalogEntry) {
+  const ok = await showConfirm(`¿Borrar «${c.description}» del catálogo?`, { title: "Catálogo", confirmLabel: "Borrar", danger: true });
+  if (!ok) return;
+  await fetch(`/api/catalog/${c.id}`, { method: "DELETE" });
+  await refreshCatalog();
+}
+
+/** Inserta la partida del catálogo en el presupuesto: bajo el capítulo seleccionado
+ *  (o como hermana de la línea seleccionada), con cantidad 0 lista para teclear. */
+function insertFromCatalog(c: CatalogEntry) {
+  const sel = selectedId ? items.find((i) => i.id === selectedId) : null;
+  const parentId = sel ? (sel.nodeType === "group" ? sel.id : sel.parentId) : null;
+  const afterSort = sel && sel.nodeType === "line" ? sel.sortOrder : undefined;
+  const id = uid();
+  pushHistory();
+  items = tree.addLine(items, boq.id, parentId, id, afterSort);
+  const it = items.find((i) => i.id === id)!;
+  it.code = c.code ?? "";
+  it.description = c.description;
+  it.unit = c.unit ?? "";
+  it.quantity = 0;
+  it.unitRate = c.unitRate ?? 0;
+  it.rateLabor = c.rateLabor ?? undefined;
+  it.rateMaterial = c.rateMaterial ?? undefined;
+  it.rateEquipment = c.rateEquipment ?? undefined;
+  it.rateSubcontract = c.rateSubcontract ?? undefined;
+  it.rateOther = c.rateOther ?? undefined;
+  markDirty();
+  catalogMode = false;
+  render();
+  focusCell(id, "quantity");
+}
+
+function renderCatalog() {
+  const app = document.getElementById("app")!;
+  app.innerHTML = "";
+
+  const header = document.createElement("header");
+  const h1 = document.createElement("h1");
+  h1.textContent = "Catálogo de precios";
+  header.append(h1, button("← Volver al editor", () => closeCatalog()));
+  app.appendChild(header);
+
+  const wrap = document.createElement("div");
+  wrap.className = "wrap";
+
+  const bar = document.createElement("div");
+  bar.className = "toolbar viewbar";
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "cell";
+  search.placeholder = "Buscar por código o descripción…";
+  search.style.maxWidth = "340px";
+  search.value = catalogQuery;
+  let searchTimer = 0;
+  search.addEventListener("input", () => {
+    catalogQuery = search.value;
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => void refreshCatalog(), 200);
+  });
+  // Enter inserta el primer resultado (flujo teclado: buscar → Enter → teclear cantidad).
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && catalogList.length) { e.preventDefault(); insertFromCatalog(catalogList[0]!); }
+  });
+  bar.append(
+    search,
+    button("+ Nueva", () => newCatalogEntry()),
+    button("⬆ Enviar partidas de este presupuesto", () => sendLinesToCatalog(), "primary"),
+  );
+  wrap.appendChild(bar);
+
+  const table = document.createElement("table");
+  table.innerHTML = `<thead><tr>
+    <th style="width:110px">Código</th><th>Descripción</th><th style="width:80px">Unidad</th>
+    <th class="num" style="width:130px">P. Unitario</th><th style="width:150px">Actualizado</th>
+    <th style="width:170px"></th>
+  </tr></thead>`;
+  catalogTbody = document.createElement("tbody");
+  table.appendChild(catalogTbody);
+  fillCatalogTbody();
+  const scroll = document.createElement("div"); scroll.className = "table-scroll"; scroll.appendChild(table);
+  wrap.appendChild(scroll);
+  app.appendChild(wrap);
+  search.focus();
+}
+
+function fillCatalogTbody() {
+  if (!catalogTbody || !catalogTbody.isConnected) return;
+  catalogTbody.innerHTML = "";
+  if (!catalogList.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 6;
+    td.style.cssText = "padding:24px;color:var(--muted)";
+    td.textContent = catalogQuery
+      ? "Sin resultados para esa búsqueda."
+      : "El catálogo está vacío. Envía las partidas de un presupuesto o crea una con «+ Nueva».";
+    tr.appendChild(td);
+    catalogTbody.appendChild(tr);
+    return;
+  }
+  const cellpad = (text: string, cls?: string) => {
+    const td = document.createElement("td");
+    if (cls) td.className = cls;
+    const div = document.createElement("div");
+    div.className = "cellpad";
+    div.textContent = text;
+    td.appendChild(div);
+    return td;
+  };
+  for (const c of catalogList) {
+    const tr = document.createElement("tr");
+    tr.append(
+      cellpad(c.code ?? ""),
+      cellpad(c.description),
+      cellpad(c.unit ?? ""),
+      cellpad(c.unitRate != null ? money.format(c.unitRate) : "—", "num"),
+      cellpad(fmtDate(c.updatedAt)),
+    );
+    const tdAct = document.createElement("td");
+    const pad = document.createElement("div");
+    pad.className = "cellpad";
+    pad.style.display = "flex";
+    pad.style.gap = "6px";
+    pad.append(
+      button("＋ Insertar", () => insertFromCatalog(c)),
+      button("×", () => deleteCatalogEntry(c), "icon del"),
+    );
+    tdAct.appendChild(pad);
+    tr.appendChild(tdAct);
+    catalogTbody.appendChild(tr);
+  }
+}
+
 // ---- QTO sobre planos PDF (medición → partidas) ----
 // La vista vive en web/qto.ts; aquí solo construimos el puente al estado del editor.
 function buildQtoContext(): QtoContext {
@@ -1126,6 +1330,7 @@ function renderVersiones() {
 function render() {
   if (compareMode) return renderCompare();
   if (snapshotMode) return renderVersiones();
+  if (catalogMode) return renderCatalog();
   amountCells.clear();
   markupAmountCells.clear();
   const app = document.getElementById("app")!;
@@ -1167,6 +1372,7 @@ function render() {
     button("💾 Guardar", () => save()),
     button("⬇ Excel", () => exportExcel()),
     button("⬆ Importar", () => importExcel()),
+    button("📚 Catálogo", () => openCatalog()),
     button("⇄ Comparar", () => openCompare()),
     button("🔖 Versiones", () => openVersiones()),
     button("📐 QTO", () => openQto()),
@@ -1414,7 +1620,7 @@ export function start() {
     // Deshacer/rehacer solo aplican en la vista del editor (no en Comparar/Versiones/QTO,
     // donde el cambio sería invisible) y nunca dentro de un diálogo modal (ahí manda el
     // undo nativo del input).
-    if (compareMode || snapshotMode || qtoMode || dialogBusy) return;
+    if (compareMode || snapshotMode || catalogMode || qtoMode || dialogBusy) return;
     if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
       e.preventDefault();
       if (e.shiftKey) redo(); else undo();

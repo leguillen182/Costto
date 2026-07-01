@@ -75,6 +75,21 @@ function migrate(sqlite: Database.Database): void {
       name TEXT NOT NULL,
       dimension TEXT
     );
+    CREATE TABLE IF NOT EXISTS catalog_items (
+      id TEXT PRIMARY KEY,
+      code TEXT,
+      description TEXT NOT NULL,
+      unit TEXT,
+      unit_rate REAL,
+      rate_labor REAL,
+      rate_material REAL,
+      rate_equipment REAL,
+      rate_subcontract REAL,
+      rate_other REAL,
+      currency TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_catalog_code ON catalog_items(code);
     CREATE TABLE IF NOT EXISTS boq_snapshots (
       id TEXT PRIMARY KEY,
       boq_id TEXT NOT NULL REFERENCES boqs(id),

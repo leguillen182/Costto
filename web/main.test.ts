@@ -21,6 +21,9 @@ function mockFetch(input: RequestInfo | URL, opts?: RequestInit) {
   const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: async () => structuredClone(body) } as Response);
   if (path === "/api/boqs") return ok({ boqs: [{ id: "b1", name: "Presupuesto base", kind: boq.kind, currency: boq.currency, projectId: "p1", projectName: "Torre A" }] });
   if (path === "/api/boq/b1/snapshots") return ok({ snapshots: [] });
+  if (path === "/api/catalog") return ok({ items: [
+    { id: "cat1", code: "HA-01", description: "Hormigón armado f'c=210", unit: "m³", unitRate: 9500, updatedAt: "2026-07-01T00:00:00Z" },
+  ] });
   if (path === "/api/boq/b1" && method === "PUT") return ok({ ok: true, calc: {} });
   if (path === "/api/boq/b1") return ok({ boq, items, markups });
   return ok({});
@@ -207,6 +210,27 @@ describe("editor — deshacer/rehacer (⌘Z)", () => {
     const before = rowIds();
     undoKey();
     expect(rowIds()).toEqual(before);
+  });
+});
+
+describe("editor — catálogo de precios (F9)", () => {
+  it("abre el catálogo, lista partidas e inserta una en el presupuesto", async () => {
+    await boot();
+    const before = rowIds().length;
+    clickBtn("📚 Catálogo");
+    await new Promise((r) => setTimeout(r, 0)); // fetch del catálogo
+    expect(document.body.textContent).toContain("Hormigón armado");
+
+    clickBtn("＋ Insertar");
+    // Vuelve al editor con la línea nueva (código y P.U. del catálogo, cantidad 0).
+    expect(rowIds().length).toBe(before + 1);
+    const newId = rowIds().find((id) => id?.startsWith("test-uid"))!;
+    expect(cell(newId, "code").value).toBe("HA-01");
+    expect(cell(newId, "unitRate").value).toBe("9500");
+    expect(cell(newId, "quantity").value).toBe("0");
+    // Y es deshacible.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true }));
+    expect(rowIds().length).toBe(before);
   });
 });
 

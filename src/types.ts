@@ -77,6 +77,22 @@ export interface MarkupRule {
   sortOrder: number; // el orden importa (cascada)
 }
 
+/** Partida maestra del catálogo de precios (F9): reutilizable entre presupuestos. */
+export interface CatalogItem {
+  id: string;
+  code?: string;
+  description: string;
+  unit?: string;
+  unitRate?: number | null;
+  rateLabor?: number | null;
+  rateMaterial?: number | null;
+  rateEquipment?: number | null;
+  rateSubcontract?: number | null;
+  rateOther?: number | null;
+  currency?: string;
+  updatedAt: string; // ISO 8601 — última vez que se actualizó el precio
+}
+
 // ---- Resultados del cálculo (contrato de dato entre cálculo y UI) ----
 
 export interface MarkupResult {

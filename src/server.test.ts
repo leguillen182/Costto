@@ -175,6 +175,47 @@ describe("server — endpoints HTTP", () => {
     expect(r.status).toBe(400);
   });
 
+  it("ciclo catálogo F9: crear → buscar → volcar desde BOQ → borrar", async () => {
+    // Crear a mano.
+    const c = await fetch(`${base}/api/catalog`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: "HA-01", description: "Hormigón armado f'c=210", unit: "m³", unitRate: 9500 }),
+    });
+    expect(c.status).toBe(201);
+
+    // Volcar las líneas del BOQ sembrado (3 líneas nuevas).
+    const up = await fetch(`${base}/api/catalog/from-boq/b1`, { method: "POST" });
+    expect(up.status).toBe(200);
+    expect(await up.json()).toEqual({ added: 3, updated: 0 });
+
+    // Re-volcar: ahora todas existen → updated.
+    const up2 = await fetch(`${base}/api/catalog/from-boq/b1`, { method: "POST" });
+    expect(await up2.json()).toEqual({ added: 0, updated: 3 });
+
+    // Buscar por texto.
+    const q = await fetch(`${base}/api/catalog?q=excav`);
+    const { items } = await q.json();
+    expect(items).toHaveLength(1);
+    expect(items[0].code).toBe("01.01");
+    expect(items[0].unitRate).toBe(350);
+
+    // Borrar.
+    const del = await fetch(`${base}/api/catalog/${items[0].id}`, { method: "DELETE" });
+    expect(del.status).toBe(200);
+    const all = await (await fetch(`${base}/api/catalog`)).json();
+    expect(all.items).toHaveLength(3); // 4 − 1
+  });
+
+  it("POST /api/catalog sin descripción responde 400", async () => {
+    const r = await fetch(`${base}/api/catalog`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ unitRate: 100 }),
+    });
+    expect(r.status).toBe(400);
+  });
+
   it("POST snapshot con label no-string responde 400 (no 500)", async () => {
     const r = await fetch(`${base}/api/boq/b1/snapshots`, {
       method: "POST",

@@ -19,6 +19,10 @@ import {
   createSnapshot,
   listSnapshots,
   getSnapshot,
+  listCatalog,
+  saveCatalogItem,
+  deleteCatalogItem,
+  upsertCatalogFromItems,
 } from "./repo.js";
 import { randomUUID } from "node:crypto";
 import { buildWorkbook } from "./export.js";
@@ -120,6 +124,57 @@ export function createApp(db: AppDb, onMutate: () => void = () => {}) {
       });
       onMutate(); // crear un presupuesto también es una mutación: respaldar (F7)
       return json(res, 201, { id });
+    }
+
+    // ---- Catálogo de precios unitarios (F9) ----
+    // Listar/buscar: GET /api/catalog?q=texto
+    if (url.pathname === "/api/catalog" && req.method === "GET") {
+      return json(res, 200, { items: listCatalog(db, url.searchParams.get("q") ?? undefined) });
+    }
+    // Crear partida maestra: POST /api/catalog
+    if (url.pathname === "/api/catalog" && req.method === "POST") {
+      const body = parseBody<Partial<import("./types.js").CatalogItem>>(await readBody(req));
+      if (typeof body.description !== "string" || !body.description.trim()) {
+        return json(res, 400, { error: "description es obligatoria" });
+      }
+      for (const k of ["unitRate", "rateLabor", "rateMaterial", "rateEquipment", "rateSubcontract", "rateOther"] as const) {
+        if (body[k] != null && typeof body[k] !== "number") return json(res, 400, { error: `${k} debe ser un número` });
+      }
+      const item = {
+        id: randomUUID(),
+        code: typeof body.code === "string" ? body.code : undefined,
+        description: body.description.trim(),
+        unit: typeof body.unit === "string" ? body.unit : undefined,
+        unitRate: body.unitRate ?? null,
+        rateLabor: body.rateLabor ?? null,
+        rateMaterial: body.rateMaterial ?? null,
+        rateEquipment: body.rateEquipment ?? null,
+        rateSubcontract: body.rateSubcontract ?? null,
+        rateOther: body.rateOther ?? null,
+        currency: typeof body.currency === "string" ? body.currency : undefined,
+        updatedAt: new Date().toISOString(),
+      };
+      saveCatalogItem(db, item);
+      onMutate();
+      return json(res, 201, { item });
+    }
+    // Borrar partida maestra: DELETE /api/catalog/:id
+    const cat = url.pathname.match(/^\/api\/catalog\/([^/]+)$/);
+    if (cat && req.method === "DELETE") {
+      deleteCatalogItem(db, cat[1]!);
+      onMutate();
+      return json(res, 200, { ok: true });
+    }
+    // Volcar las líneas de un BOQ al catálogo (upsert por código/descripción):
+    // POST /api/catalog/from-boq/:boqId
+    const catFrom = url.pathname.match(/^\/api\/catalog\/from-boq\/([^/]+)$/);
+    if (catFrom && req.method === "POST") {
+      const id = catFrom[1]!;
+      const boq = getBoq(db, id);
+      if (!boq) return json(res, 404, { error: "BOQ no encontrado" });
+      const result = upsertCatalogFromItems(db, getItems(db, id), boq.currency, new Date().toISOString());
+      onMutate();
+      return json(res, 200, result);
     }
 
     // Comparar 2 presupuestos: GET /api/compare?a=ID&b=ID
