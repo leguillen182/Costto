@@ -170,6 +170,46 @@ describe("editor — guardado", () => {
   });
 });
 
+describe("editor — deshacer/rehacer (⌘Z)", () => {
+  const undoKey = () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true }));
+  const redoKey = () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: true }));
+
+  it("⌘Z restaura una fila eliminada (con sus hijos) y ⇧⌘Z la vuelve a quitar", async () => {
+    await boot();
+    const before = rowIds();
+    // Eliminar el capítulo 01 (c1) arrastra a sus hijos l1 y l2.
+    const delBtn = [...document.querySelectorAll<HTMLElement>(`tr[data-id="c1"] button`)]
+      .find((b) => b.textContent?.trim() === "×");
+    delBtn!.click();
+    expect(rowIds()).not.toContain("c1");
+    expect(rowIds()).not.toContain("l1");
+
+    undoKey();
+    expect(rowIds()).toEqual(before); // capítulo e hijos de vuelta, mismo orden
+
+    redoKey();
+    expect(rowIds()).not.toContain("c1");
+  });
+
+  it("una ráfaga de tecleo en la misma celda se deshace en un solo ⌘Z", async () => {
+    await boot();
+    const q = cell("l1", "quantity"); // valor original: 100
+    for (const v of ["1", "12", "125"]) {
+      q.value = v;
+      q.dispatchEvent(new Event("input"));
+    }
+    undoKey();
+    expect(cell("l1", "quantity").value).toBe("100"); // no "12": la ráfaga es un solo paso
+  });
+
+  it("⌘Z con la pila vacía es un no-op inofensivo", async () => {
+    await boot();
+    const before = rowIds();
+    undoKey();
+    expect(rowIds()).toEqual(before);
+  });
+});
+
 describe("editor — vista Versiones (F3)", () => {
   it("abrir Versiones renderiza el panel de congelar", async () => {
     await boot();

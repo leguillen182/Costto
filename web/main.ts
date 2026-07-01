@@ -79,6 +79,7 @@ async function load() {
     boq = data.boq;
     items = data.items;
     markups = data.markups;
+    resetHistory(); // el historial de undo no cruza cargas/cambios de presupuesto
     money = new Intl.NumberFormat("es-DO", { style: "currency", currency: boq.currency, maximumFractionDigits: boq.roundingDecimals });
     render();
     setStatus("saved");
@@ -434,6 +435,7 @@ function buildQtoContext(): QtoContext {
         .map((g) => ({ id: g.id, label: `${g.code?.trim() ? g.code.trim() + " · " : ""}${g.description?.trim() || "(sin nombre)"}` })),
     addLineUnder: (parentId, fields) => {
       const id = uid();
+      pushHistory();
       items = tree.addLine(items, boq.id, parentId, id);
       const it = items.find((i) => i.id === id);
       if (it) Object.assign(it, fields);
@@ -441,17 +443,18 @@ function buildQtoContext(): QtoContext {
     },
     updateLine: (id, patch) => {
       const it = items.find((i) => i.id === id);
-      if (it) Object.assign(it, patch);
+      if (it) { pushHistory(); Object.assign(it, patch); }
     },
     isLine: (id) => items.find((i) => i.id === id)?.nodeType === "line",
     markDirty: () => markDirty(),
-    backToEditor: () => render(),
+    backToEditor: () => { qtoMode = false; render(); },
     showAlert: (msg, title) => showAlert(msg, title),
     showConfirm: (msg, opts) => showConfirm(msg, opts),
     showPrompt: (lbl, def, title) => showPrompt(lbl, def, title),
   };
 }
-function openQto() { openQtoView(buildQtoContext()); }
+let qtoMode = false;
+function openQto() { qtoMode = true; openQtoView(buildQtoContext()); }
 
 function fmtDate(iso: string): string {
   const d = new Date(iso);
@@ -472,6 +475,72 @@ function setStatus(s: "saved" | "dirty" | "saving" | "error") {
 }
 function markDirty() { editVersion++; setStatus("dirty"); }
 
+// ---- historial (deshacer/rehacer, ⌘Z / ⇧⌘Z) ----
+// Pila de estados del contenido editable (items + markups + campos del BOQ que toca el
+// editor). Cada mutación empuja el estado ANTERIOR; las ráfagas de tecleo sobre una misma
+// celda se coalescen con `editKey` (⌘Z deshace la ráfaga completa, no letra a letra).
+interface HistState {
+  items: BoqItem[];
+  markups: MarkupRule[];
+  detailLevel: "simple" | "detailed";
+  builtArea: number | null;
+}
+const HISTORY_MAX = 50;
+let undoStack: HistState[] = [];
+let redoStack: HistState[] = [];
+let lastEditKey: string | null = null;
+
+function histSnapshot(): HistState {
+  return structuredClone({
+    items,
+    markups,
+    detailLevel: boq.detailLevel ?? "simple",
+    builtArea: boq.builtArea ?? null,
+  });
+}
+
+/** Llamar ANTES de mutar. `editKey` no-null coalesce ediciones seguidas de la misma celda. */
+function pushHistory(editKey: string | null = null) {
+  if (editKey != null && editKey === lastEditKey) return;
+  lastEditKey = editKey;
+  undoStack.push(histSnapshot());
+  if (undoStack.length > HISTORY_MAX) undoStack.shift();
+  redoStack = [];
+}
+
+function resetHistory() {
+  undoStack = [];
+  redoStack = [];
+  lastEditKey = null;
+}
+
+function applyHist(s: HistState) {
+  items = s.items;
+  markups = s.markups;
+  boq.detailLevel = s.detailLevel;
+  boq.builtArea = s.builtArea;
+}
+
+function undo() {
+  const prev = undoStack.pop();
+  if (!prev) return;
+  lastEditKey = null;
+  redoStack.push(histSnapshot());
+  applyHist(prev);
+  markDirty();
+  render();
+}
+
+function redo() {
+  const next = redoStack.pop();
+  if (!next) return;
+  lastEditKey = null;
+  undoStack.push(histSnapshot());
+  applyHist(next);
+  markDirty();
+  render();
+}
+
 // ---- modelo / árbol ----
 // La lógica de árbol (pura) vive en src/tree.ts; aquí solo se envuelve para
 // reasignar `items`, marcar dirty, re-renderizar y reposicionar el foco.
@@ -481,6 +550,7 @@ function ordered(): { item: BoqItem; depth: number }[] {
 
 function addGroup(parentId: string | null) {
   const id = uid();
+  pushHistory();
   items = tree.addGroup(items, boq.id, parentId, id);
   markDirty();
   render();
@@ -489,6 +559,7 @@ function addGroup(parentId: string | null) {
 
 function addLine(parentId: string | null, afterSort?: number) {
   const id = uid();
+  pushHistory();
   items = tree.addLine(items, boq.id, parentId, id, afterSort);
   markDirty();
   render();
@@ -499,6 +570,7 @@ function addLine(parentId: string | null, afterSort?: number) {
 function indent(it: BoqItem, col: Col) {
   const next = tree.indent(items, it.id);
   if (next === items) return; // sin hermano anterior → no-op
+  pushHistory();
   items = next;
   markDirty();
   render();
@@ -509,6 +581,7 @@ function indent(it: BoqItem, col: Col) {
 function outdent(it: BoqItem, col: Col) {
   const next = tree.outdent(items, it.id);
   if (next === items) return;
+  pushHistory();
   items = next;
   markDirty();
   render();
@@ -540,6 +613,7 @@ function move(dir: -1 | 1) {
   if (!selectedId) return;
   const next = tree.move(items, selectedId, dir);
   if (next === items) return; // ya está en el extremo → no-op
+  pushHistory();
   items = next;
   markDirty();
   render();
@@ -547,6 +621,7 @@ function move(dir: -1 | 1) {
 
 // ---- modo de detalle y desglose ----
 function setDetailLevel(level: "simple" | "detailed") {
+  pushHistory();
   boq.detailLevel = level;
   if (level === "simple") expanded.clear();
   markDirty();
@@ -559,6 +634,7 @@ function toggleExpand(id: string) {
 }
 // Actualiza un componente de tarifa y deriva el P.U. = suma de componentes.
 function setRatePart(it: BoqItem, key: (typeof RATE_PARTS)[number]["key"], value: number | null) {
+  pushHistory(`rate:${it.id}:${key}`);
   it[key] = value;
   const sum = componentSum(it);
   it.unitRate = sum; // P.U. derivado (null si se borraron todos los componentes)
@@ -577,6 +653,7 @@ function hasBreakdown(it: BoqItem): boolean {
 }
 
 function removeItem(id: string) {
+  pushHistory();
   items = tree.removeItem(items, id);
   markDirty();
   render();
@@ -726,11 +803,13 @@ function renderValidation() {
 // ---- markups (editor) ----
 function addMarkup() {
   const maxSort = markups.length ? Math.max(...markups.map((m) => m.sortOrder)) : 0;
+  pushHistory();
   markups.push({ id: uid(), boqId: boq.id, name: "Nuevo markup", type: "percentage", value: 0, basis: "running", sortOrder: maxSort + 1 });
   markDirty();
   render();
 }
 function removeMarkup(id: string) {
+  pushHistory();
   markups = markups.filter((m) => m.id !== id);
   markDirty();
   render();
@@ -740,22 +819,22 @@ function makeMarkupRow(m: MarkupRule): HTMLTableRowElement {
 
   const tdName = td();
   const name = textInput(m.name);
-  name.addEventListener("input", () => { m.name = name.value; markDirty(); });
+  name.addEventListener("input", () => { pushHistory(`mk:${m.id}:name`); m.name = name.value; markDirty(); });
   tdName.appendChild(name); tr.appendChild(tdName);
 
   const tdType = td();
   const type = selectInput([["percentage", "Porcentaje (%)"], ["fixed", "Monto fijo"]], m.type);
-  type.addEventListener("change", () => { m.type = type.value as MarkupRule["type"]; markDirty(); recompute(); });
+  type.addEventListener("change", () => { pushHistory(); m.type = type.value as MarkupRule["type"]; markDirty(); recompute(); });
   tdType.appendChild(type); tr.appendChild(tdType);
 
   const tdVal = td("num");
   const val = numInput(m.value);
-  val.addEventListener("input", () => { m.value = val.value === "" ? 0 : Number(val.value); markDirty(); recompute(); });
+  val.addEventListener("input", () => { pushHistory(`mk:${m.id}:value`); m.value = val.value === "" ? 0 : Number(val.value); markDirty(); recompute(); });
   tdVal.appendChild(val); tr.appendChild(tdVal);
 
   const tdBasis = td();
   const basis = selectInput([["subtotal", "Sobre subtotal"], ["running", "Sobre acumulado"]], m.basis);
-  basis.addEventListener("change", () => { m.basis = basis.value as MarkupRule["basis"]; markDirty(); recompute(); });
+  basis.addEventListener("change", () => { pushHistory(); m.basis = basis.value as MarkupRule["basis"]; markDirty(); recompute(); });
   tdBasis.appendChild(basis); tr.appendChild(tdBasis);
 
   const tdAmt = document.createElement("td"); tdAmt.className = "amount"; markupAmountCells.set(m.id, tdAmt); tr.appendChild(tdAmt);
@@ -800,11 +879,14 @@ function makeCell(it: BoqItem, col: Col): HTMLInputElement {
 
   input.addEventListener("input", () => {
     if (input.readOnly) return;
+    pushHistory(`cell:${it.id}:${col}`);
     setField(it, col, input.value);
     markDirty();
     recompute();
   });
-  input.addEventListener("focus", () => selectRow(it.id));
+  // Enfocar una celda inicia una "sesión de edición" nueva: la próxima ráfaga de
+  // tecleo empuja su propio estado de undo aunque sea la misma celda de antes.
+  input.addEventListener("focus", () => { lastEditKey = null; selectRow(it.id); });
   input.addEventListener("keydown", (e) => onKey(e, it, col));
   return input;
 }
@@ -1257,6 +1339,7 @@ function render() {
   if (boq.builtArea != null && boq.builtArea > 0) areaInput.value = String(boq.builtArea);
   areaInput.addEventListener("input", () => {
     const v = parseFloat(areaInput.value);
+    pushHistory("area");
     boq.builtArea = Number.isFinite(v) && v > 0 ? v : null;
     markDirty();
     recompute();
@@ -1276,7 +1359,7 @@ function render() {
 
   const hint = document.createElement("div");
   hint.className = "hint";
-  hint.innerHTML = `<kbd>Tab</kbd> celdas · <kbd>Enter</kbd> nueva partida · <kbd>↑</kbd>/<kbd>↓</kbd> fila · <kbd>Alt</kbd>+<kbd>→</kbd>/<kbd>←</kbd> indentar · <kbd>⌘S</kbd> guardar · × elimina`;
+  hint.innerHTML = `<kbd>Tab</kbd> celdas · <kbd>Enter</kbd> nueva partida · <kbd>↑</kbd>/<kbd>↓</kbd> fila · <kbd>Alt</kbd>+<kbd>→</kbd>/<kbd>←</kbd> indentar · <kbd>⌘Z</kbd> deshacer · <kbd>⇧⌘Z</kbd> rehacer · <kbd>⌘S</kbd> guardar · × elimina`;
   wrap.appendChild(hint);
 
   app.appendChild(wrap);
@@ -1327,7 +1410,18 @@ function selectInput(opts: [string, string][], val: string): HTMLSelectElement {
 // Exportado para que los tests lo invoquen tras montar el DOM y mockear fetch.
 export function start() {
   window.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); save(); return; }
+    // Deshacer/rehacer solo aplican en la vista del editor (no en Comparar/Versiones/QTO,
+    // donde el cambio sería invisible) y nunca dentro de un diálogo modal (ahí manda el
+    // undo nativo del input).
+    if (compareMode || snapshotMode || qtoMode || dialogBusy) return;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+      e.preventDefault();
+      if (e.shiftKey) redo(); else undo();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "y") {
+      e.preventDefault();
+      redo();
+    }
   });
   return init();
 }
